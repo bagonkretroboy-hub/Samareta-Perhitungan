@@ -53,7 +53,7 @@ if uploaded_file:
             total_modal = df['Modal_Baris'].sum()
             profit = omset - total_modal
             
-            # 4. TAMPILAN DASHBOARD (PERBAIKAN SYNTAX DI SINI)
+            # 4. TAMPILAN DASHBOARD
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Omset (Filtered)", f"Rp {omset:,.0f}")
             c2.metric("Orders", f"{orders}")
@@ -76,6 +76,35 @@ if uploaded_file:
                         api_key = st.secrets["GEMINI_API_KEY"]
                         genai.configure(api_key=api_key)
                         
-                        # Auto-detect model
+                        # Ambil daftar model yang support generateContent
                         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                        selected_model = next((m for m in models if 'flash' in m), models
+                        
+                        # PERBAIKAN DI SINI: Memastikan kurung tutup lengkap
+                        selected_model = next((m for m in models if 'flash' in m), models[0])
+                        
+                        model = genai.GenerativeModel(selected_model)
+                        
+                        sample_data = df[[col_nama_produk, col_pendapatan]].head(15).to_string()
+                        
+                        full_prompt = f"""
+                        Data Bisnis Saya:
+                        - Omset: Rp {omset:,.0f}
+                        - Modal: Rp {total_modal:,.0f}
+                        - Profit: Rp {profit:,.0f}
+                        - Sampel Data Produk:
+                        {sample_data}
+
+                        Pertanyaan/Instruksi User: {user_instruction}
+                        """
+
+                        with st.spinner(f'Menganalisis dengan {selected_model}...'):
+                            response = model.generate_content(full_prompt)
+                            st.info(f"**Jawaban AI:**\n\n{response.text}")
+                    except Exception as e:
+                        st.error(f"Gagal menghubungi AI: {e}")
+                else:
+                    st.warning("Silakan isi pertanyaan Anda.")
+        else:
+            st.error("Kolom 'Product Name' atau 'Amount' tidak ditemukan di CSV!")
+    except Exception as e:
+        st.error(f"Error Aplikasi: {e}")
