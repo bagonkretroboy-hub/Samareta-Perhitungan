@@ -3,7 +3,7 @@ import pandas as pd
 import google.generativeai as genai
 
 # --- CONFIGURASI DASAR ---
-st.set_page_config(page_title="AI Business Manager", layout="wide", page_icon="📈")
+st.set_page_config(page_title="-`♡´-SAMARETA BERJAYA-`♡´-", layout="wide", page_icon="📈")
 st.title("📈 AI Business Manager Pro")
 
 # --- KONFIGURASI MODAL DARI SECRETS ---
