@@ -53,5 +53,29 @@ if uploaded_file:
             total_modal = df['Modal_Baris'].sum()
             profit = omset - total_modal
             
-            # 4. TAMPILAN DASHBOARD
-            c1, c2, c3, c4
+            # 4. TAMPILAN DASHBOARD (PERBAIKAN SYNTAX DI SINI)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Omset (Filtered)", f"Rp {omset:,.0f}")
+            c2.metric("Orders", f"{orders}")
+            c3.metric("Total Modal", f"Rp {total_modal:,.0f}")
+            c4.metric("Profit Bersih", f"Rp {profit:,.0f}")
+
+            st.success(f"### 🤝 Jatah Per Orang (Bagi 3): Rp {profit/3:,.0f}")
+
+            with st.expander("📂 Lihat Detail Data Terfilter"):
+                st.dataframe(df[[col_nama_produk, col_pendapatan, 'Modal_Baris']], use_container_width=True)
+
+            # --- 5. TANYA AI ---
+            st.divider()
+            st.subheader("🤖 Tanya Manajer AI tentang Data Ini")
+            user_instruction = st.text_area("Apa yang ingin Anda ketahui?", placeholder="Contoh: Berikan ringkasan performa penjualan produk ini...")
+            
+            if st.button("Kirim ke AI"):
+                if user_instruction:
+                    try:
+                        api_key = st.secrets["GEMINI_API_KEY"]
+                        genai.configure(api_key=api_key)
+                        
+                        # Auto-detect model
+                        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                        selected_model = next((m for m in models if 'flash' in m), models
