@@ -3,49 +3,49 @@ import pandas as pd
 import google.generativeai as genai
 import io
 
-# Konfigurasi Halaman
-st.set_page_config(page_title="TikTok Profit Splitter", layout="centered", page_icon="💰")
+st.set_page_config(page_title="TikTok Profit Splitter", layout="centered")
 
 st.title("💰 TikTok Profit Splitter")
-st.markdown("Aplikasi bagi hasil otomatis untuk tim 3 orang.")
 
-# Sidebar untuk input sensitif
 with st.sidebar:
     st.header("⚙️ Pengaturan")
-    api_key = st.text_input("Masukkan Gemini API Key", type="password", help="Dapatkan di Google AI Studio")
-    modal_fix = st.number_input("Modal per Barang (Rp)", value=25000, step=1000)
-    st.info("API Key diperlukan untuk fitur Analisis AI.")
+    api_key = st.text_input("Masukkan Gemini API Key", type="password")
+    modal_fix = st.number_input("Modal per Barang (Rp)", value=25000)
 
-# Upload File
-uploaded_file = st.file_uploader("Upload file CSV TikTok (Laporan Penghasilan)", type=["csv"])
+uploaded_file = st.file_uploader("Upload file CSV TikTok", type=["csv"])
 
 if uploaded_file:
-    # Baca Data
     try:
         df = pd.read_csv(uploaded_file)
-        
-        # Cari kolom pendapatan (TikTok sering mengubah nama kolom: 'Penghasilan Konten', 'Settlement Amount', dll)
-        # Kita cari kolom yang mengandung kata kunci pendapatan
-        keywords = ['Penghasilan', 'Amount', 'Settlement', 'Revenue', 'Total']
-        target_col = None
-        for col in df.columns:
-            if any(key.lower() in col.lower() for key in keywords):
-                target_col = col
-                break
+        # Mencari kolom pendapatan
+        target_col = next((c for c in df.columns if any(k in c for k in ['Penghasilan', 'Amount', 'Settlement'])), None)
 
         if target_col:
-            # Hitung Angka Utama
-            total_omset = pd.to_numeric(df[target_col], errors='coerce').sum()
-            total_order = len(df)
-            total_modal = total_order * modal_fix
-            profit_bersih = total_omset - total_modal
-            bagi_tiga = profit_bersih / 3
-            
-            # Tampilan Dashboard Utama
+            omset = pd.to_numeric(df[target_col], errors='coerce').sum()
+            orders = len(df)
+            modal = orders * modal_fix
+            profit = omset - modal
+            bagi_hasil = profit / 3
+
             st.divider()
             c1, c2 = st.columns(2)
-            with c1:
-                st.metric("Total Omset", f"Rp {total_omset:,.0f}")
-                st.metric("Total Order", f"{total_order} Pesanan")
-            with c2:
-                st.metric("Total Modal", f"Rp
+            c1.metric("Total Omset", f"Rp {omset:,.0f}")
+            c1.metric("Total Order", f"{orders}")
+            c2.metric("Total Modal", f"Rp {modal:,.0f}")
+            c2.metric("Profit Bersih", f"Rp {profit:,.0f}")
+            
+            st.success(f"### 🤝 Jatah Per Orang: Rp {bagi_hasil:,.0f}")
+
+            if st.button("Minta Saran AI"):
+                if api_key:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    prompt = f"Bisnis TikTok: Omset {omset}, Profit {profit}. Berikan 1 tips sukses."
+                    response = model.generate_content(prompt)
+                    st.info(response.text)
+                else:
+                    st.error("Isi API Key di sidebar!")
+        else:
+            st.error("Kolom pendapatan tidak ditemukan!")
+    except Exception as e:
+        st.error(f"Error: {e}")
