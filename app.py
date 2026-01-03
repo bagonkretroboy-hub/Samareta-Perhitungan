@@ -1,10 +1,8 @@
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
-import io
 
 st.set_page_config(page_title="TikTok Profit Splitter", layout="centered")
-
 st.title("💰 TikTok Profit Splitter")
 
 with st.sidebar:
@@ -17,7 +15,6 @@ uploaded_file = st.file_uploader("Upload file CSV TikTok", type=["csv"])
 if uploaded_file:
     try:
         df = pd.read_csv(uploaded_file)
-        # Mencari kolom pendapatan
         target_col = next((c for c in df.columns if any(k in c for k in ['Penghasilan', 'Amount', 'Settlement'])), None)
 
         if target_col:
@@ -38,11 +35,20 @@ if uploaded_file:
 
             if st.button("Minta Saran AI"):
                 if api_key:
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    prompt = f"Bisnis TikTok: Omset {omset}, Profit {profit}. Berikan 1 tips sukses."
-                    response = model.generate_content(prompt)
-                    st.info(response.text)
+                    try:
+                        genai.configure(api_key=api_key)
+                        
+                        # LOGIKA ANTI-GAGAL: Mencari model yang aktif secara otomatis
+                        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                        # Prioritaskan gemini-1.5-flash, jika tidak ada pakai yang tersedia pertama
+                        model_name = next((m for m in models if 'gemini-1.5-flash' in m), models[0])
+                        
+                        model = genai.GenerativeModel(model_name)
+                        prompt = f"Bisnis TikTok: Omset {omset}, Profit {profit}. Berikan 1 tips singkat."
+                        response = model.generate_content(prompt)
+                        st.info(f"🤖 Saran dari {model_name}: \n\n {response.text}")
+                    except Exception as ai_err:
+                        st.error(f"AI sedang gangguan: {ai_err}")
                 else:
                     st.error("Isi API Key di sidebar!")
         else:
