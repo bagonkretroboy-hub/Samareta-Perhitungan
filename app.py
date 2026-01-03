@@ -10,7 +10,7 @@ st.title("💰 TikTok Profit Splitter")
 # Sidebar untuk Input Rahasia
 with st.sidebar:
     st.header("Pengaturan")
-    api_key = st.text_input("AIzaSyDqWhwlne2pHOyiO9RAn-rPMLUZNjuAah0", type="password")
+    api_key = st.text_input("Masukkan Gemini API Key", type="password")
     modal_fix = st.number_input("Modal per Barang (Rp)", value=25000)
 
 uploaded_file = st.file_uploader("Upload file CSV TikTok", type=["csv"])
