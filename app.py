@@ -2,103 +2,101 @@ import streamlit as st
 import pandas as pd
 import google.generativeai as genai
 
-# 1. Judul dan Konfigurasi Dasar
-st.set_page_config(page_title="AI Business Manager", layout="centered", page_icon="📈")
-st.title("📈 AI Business Manager")
+st.set_page_config(page_title="AI Business Manager", layout="wide", page_icon="📈")
+st.title("📈 AI Business Manager Pro")
 
-# 2. Konfigurasi Modal dari Secrets
+# --- CONFIG SECRETS ---
 try:
     daftar_modal = st.secrets["MODAL_PRODUK"]
 except:
     daftar_modal = {"DEFAULT": 25000}
 
 with st.sidebar:
-    st.header("⚙️ Konfigurasi")
-    modal_fix = st.number_input("Modal per Barang (Rp)", value=int(daftar_modal.get("DEFAULT", 25000)))
+    st.header("⚙️ Filter & Konfigurasi")
+    modal_fix = st.number_input("Modal Default (Rp)", value=int(daftar_modal.get("DEFAULT", 25000)))
+    
     st.divider()
-    st.success("Mode Otomatis (Secrets) Aktif ✅")
+    # FITUR BARU: Pencarian Produk
+    search_query = st.text_input("Cari Produk (misal: Kaos)", "")
+    
+    # FITUR BARU: Filter Tanggal (Jika ada kolom tanggal di CSV)
+    st.info("Tips: Ketik nama produk di atas untuk memfilter tabel.")
 
-# 3. Fitur Upload File
 uploaded_file = st.file_uploader("Upload CSV TikTok", type=["csv"])
 
 if uploaded_file:
     try:
         df = pd.read_csv(uploaded_file)
-        keywords = ['Penghasilan', 'Amount', 'Settlement', 'Total']
-        target_col = next((c for c in df.columns if any(k.lower() in c.lower() for k in keywords)), None)
+        
+        # Standarisasi Kolom
+        col_pendapatan = next((c for c in df.columns if any(k.lower() in c.lower() for k in ['penghasilan', 'amount', 'settlement', 'total'])), None)
         col_nama_produk = next((c for c in df.columns if any(k in c.lower() for k in ['product', 'nama', 'item'])), None)
+        col_tanggal = next((c for c in df.columns if any(k in c.lower() for k in ['date', 'tanggal', 'time'])), None)
 
-        if target_col:
-            # Fungsi Hitung Modal
+        if col_pendapatan and col_nama_produk:
+            # FILTER DATA BERDASARKAN INPUT SIDEBAR
+            if search_query:
+                df = df[df[col_nama_produk].str.contains(search_query, case=False, na=False)]
+
+            # Hitung Modal Otomatis
             def get_modal(row):
-                if col_nama_produk:
-                    nama_item = str(row[col_nama_produk]).lower()
-                    for key, harga in daftar_modal.items():
-                        if key.lower() in nama_item:
-                            return harga * row.get('Quantity', 1)
+                nama_item = str(row[col_nama_produk]).lower()
+                for key, harga in daftar_modal.items():
+                    if key.lower() in nama_item:
+                        return harga * row.get('Quantity', 1)
                 return modal_fix * row.get('Quantity', 1)
 
             df['Modal_Baris'] = df.apply(get_modal, axis=1)
-            omset = pd.to_numeric(df[target_col], errors='coerce').sum()
+            df[col_pendapatan] = pd.to_numeric(df[col_pendapatan], errors='coerce')
+            
+            # Hitung Total
+            omset = df[col_pendapatan].sum()
             orders = len(df)
             total_modal = df['Modal_Baris'].sum()
             profit = omset - total_modal
-            bagi_hasil = profit / 3
-
-            # --- Tampilan Metrik ---
-            st.divider()
-            c1, c2 = st.columns(2)
-            c1.metric("Total Omset", f"Rp {omset:,.0f}")
-            c1.metric("Total Order", f"{orders} Pesanan")
-            c2.metric("Total Modal", f"Rp {total_modal:,.0f}")
-            c2.metric("Profit Bersih", f"Rp {profit:,.0f}")
-            st.success(f"### 🤝 Jatah Per Orang: Rp {bagi_hasil:,.0f}")
-
-            # --- FITUR TANYA AI (Prompt Manual) ---
-            st.divider()
-            st.subheader("🤖 Tanya Manajer AI")
             
-            user_instruction = st.text_area(
-                "Apa yang ingin Anda tanyakan pada AI?", 
-                placeholder="Contoh: Analisis keuntungan saya dan berikan strategi iklan..."
-            )
+            # Tampilan Dashboard
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Omset (Filtered)", f"Rp {omset:,.0f}")
+            c2.metric("Orders", f"{orders}")
+            c3.metric("Profit", f"Rp {profit:,.0f}")
+            c4.metric("Jatah/Orang", f"Rp {profit/3:,.0f}")
+
+            # Tampilkan Tabel yang sudah difilter
+            with st.expander("Lihat Rincian Data Terfilter"):
+                st.dataframe(df[[col_nama_produk, col_pendapatan, 'Modal_Baris']])
+
+            # --- TANYA AI TENTANG DATA TERFILTER ---
+            st.divider()
+            st.subheader("🤖 Analisis Data Terfilter")
+            user_instruction = st.text_area("Tanya AI tentang data di atas:", placeholder="Contoh: Berikan rangkuman penjualan produk ini saja...")
             
             if st.button("Kirim ke AI"):
                 if user_instruction:
                     try:
-                        # Setup API
                         api_key = st.secrets["GEMINI_API_KEY"]
                         genai.configure(api_key=api_key)
-
-                        # Cari model yang tersedia secara otomatis
-                        available_models = [
-                            m.name for m in genai.list_models() 
-                            if 'generateContent' in m.supported_generation_methods
-                        ]
-                        model_name = next((m for m in available_models if 'gemini-1.5-flash' in m), available_models[0])
                         
-                        model = genai.GenerativeModel(model_name)
-
-                        # Gabungkan Data & Instruksi
+                        # Ambil 10 baris pertama data terfilter untuk konteks AI agar tidak terlalu panjang
+                        sample_data = df[[col_nama_produk, col_pendapatan]].head(20).to_string()
+                        
                         full_prompt = f"""
-                        Data Bisnis Saya:
-                        - Omset: Rp {omset:,.0f}
-                        - Modal: Rp {total_modal:,.0f}
-                        - Profit: Rp {profit:,.0f}
-                        - Jumlah Order: {orders}
+                        Data Terfilter:
+                        - Total Omset: Rp {omset:,.0f}
+                        - Total Order: {orders}
+                        - Sampel Data:
+                        {sample_data}
 
-                        Pertanyaan/Instruksi User: 
-                        {user_instruction}
+                        Instruksi: {user_instruction}
                         """
 
-                        with st.spinner(f'Menghubungi AI ({model_name})...'):
+                        with st.spinner('AI sedang menganalisis...'):
+                            model = genai.GenerativeModel('gemini-1.5-flash')
                             response = model.generate_content(full_prompt)
                             st.info(f"**Jawaban AI:**\n\n{response.text}")
                     except Exception as e:
                         st.error(f"Error AI: {e}")
-                else:
-                    st.warning("Silakan ketik pertanyaan Anda terlebih dahulu!")
         else:
-            st.error("Kolom pendapatan tidak ditemukan!")
+            st.error("Kolom data tidak lengkap!")
     except Exception as e:
-        st.error(f"Error Aplikasi: {e}")
+        st.error(f"Error: {e}")
