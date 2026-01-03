@@ -4,7 +4,7 @@ import google.generativeai as genai
 
 # --- CONFIGURASI DASAR ---
 st.set_page_config(page_title="-`♡´-SAMARETA BERJAYA-`♡´-", layout="wide", page_icon="📈")
-st.title("⸜(｡˃ ᵕ ˂ )⸝♡ -`♡´-SAMARETA BERJAYA-`♡´-")
+st.title("⸜(｡˃ ᵕ ˂ )⸝♡ -SAMARETA BERJAYA-")
 
 # --- KONFIGURASI MODAL DARI SECRETS ---
 try:
