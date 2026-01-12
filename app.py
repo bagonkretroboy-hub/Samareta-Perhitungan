@@ -70,59 +70,60 @@ if uploaded_file:
         m3.metric("Profit Bersih", f"Rp {profit:,.0f}")
         m4.metric("Bagi Hasil (1/3)", f"Rp {profit/3:,.0f}")
 
-        # --- TREN HARIAN UNTUK CHART & AI ---
-        daily_trend = df.groupby(df['Created Time'].dt.date)[col_uang].sum().reset_index()
-        daily_trend.columns = ['Tanggal', 'Omset']
+        # --- DATA UNTUK ANALISIS DETAIL (TANGGAL + PRODUK) ---
+        # Membuat tabel gabungan Tanggal dan Produk untuk dibaca AI
+        df['Tanggal_Saja'] = df['Created Time'].dt.date
+        detail_analysis = df.groupby(['Tanggal_Saja', 'Product Name']).agg({
+            'Quantity': 'sum',
+            col_uang: 'sum',
+            'Net_Profit': 'sum'
+        }).reset_index()
 
+        # VISUALISASI
+        daily_trend = df.groupby('Tanggal_Saja')[col_uang].sum().reset_index()
         c1, c2 = st.columns([2,1])
         with c1:
-            st.plotly_chart(px.line(daily_trend, x='Tanggal', y='Omset', title="Grafik Tren Penjualan", template="plotly_white"), use_container_width=True)
+            st.plotly_chart(px.line(daily_trend, x='Tanggal_Saja', y=col_uang, title="Tren Omset", template="plotly_white"), use_container_width=True)
         with c2:
             st.plotly_chart(px.pie(df, values=col_uang, names='Product Category', title="Kategori", hole=0.4), use_container_width=True)
 
-        # TABEL RINGKASAN
+        # TABEL RINGKASAN PRODUK
         summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang:'sum', 'Net_Profit':'sum'}).sort_values('Net_Profit', ascending=False)
         st.subheader("📋 Performa Detail per Produk")
         st.dataframe(summary, use_container_width=True)
 
-        # --- AI STRATEGIST (HYBRID PRO: TIME-SERIES AWARE) ---
+        # --- AI STRATEGIST (VERSI ULTRA-DETAIL) ---
         st.divider()
-        st.subheader("🤖 AI Strategist (Hybrid Pro)")
-        u_in = st.text_input("Tanya AI (Contoh: Bagaimana tren penjualan saya 3 hari terakhir?):")
+        st.subheader("🤖 AI Strategist (Deep Analysis)")
+        u_in = st.text_input("Tanya AI (Contoh: Kapan Produk A paling laku dan berapa untungnya?):")
         
-        if st.button("Analisis AI") and u_in:
+        if st.button("Analisis AI Sekarang") and u_in:
             try:
                 genai.configure(api_key=API_KEY)
                 models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 selected_model = next((m for m in models if "1.5-flash" in m), models[0])
                 model = genai.GenerativeModel(selected_model)
                 
-                # Menyiapkan data tren waktu (Tanggal & Omset)
-                time_context = daily_trend.to_string(index=False)
-                product_context = summary.head(15).to_string() # Kirim 15 produk teratas
+                # Mengirimkan data detail gabungan Tanggal & Produk ke AI
+                # Kita batasi 50 baris teratas agar tidak kepanjangan (bisa disesuaikan)
+                detail_context = detail_analysis.sort_values(['Net_Profit'], ascending=False).head(50).to_string(index=False)
                 
                 prompt = f"""
-                Kamu adalah Senior Business Analyst Samareta. Analisis data berikut:
+                Kamu adalah Analis Data Samareta. Gunakan data detail di bawah ini:
 
-                1. TREN PENJUALAN HARIAN:
-                {time_context}
+                DATA DETAIL (Tanggal, Nama Produk, Qty, Omset, Profit):
+                {detail_context}
 
-                2. PERFORMA PRODUK TERATAS:
-                {product_context}
-
-                DATA KEUANGAN: Omset Rp {omset:,.0f}, Profit Rp {profit:,.0f}.
-
-                USER QUESTION: "{u_in}"
+                PERTANYAAN USER: "{u_in}"
 
                 TUGAS:
-                - Jika user bertanya tentang waktu/hari, lihat tabel TREN PENJUALAN HARIAN.
-                - Jika user bertanya tentang produk, lihat tabel PERFORMA PRODUK.
-                - Berikan jawaban yang spesifik menyebutkan tanggal atau nama produk jika relevan.
+                Jawab dengan menyebutkan tanggal spesifik, nama produk, jumlah (pcs), dan nominal profitnya sesuai data di atas.
+                Jika data tidak ditemukan dalam 50 baris teratas, beri tahu user berdasarkan tren umum.
                 """
                 
-                with st.spinner("AI sedang menyisir data tren harian..."):
+                with st.spinner("AI sedang menghitung detail transaksi..."):
                     res = model.generate_content(prompt)
-                    st.info(f"💡 **Analisis AI:**\n\n{res.text}")
+                    st.info(f"💡 **Hasil Analisis:**\n\n{res.text}")
             except Exception as e:
                 st.error(f"Gagal memanggil AI: {e}")
 
