@@ -2,155 +2,201 @@ import streamlit as st
 import pandas as pd
 import google.generativeai as genai
 import plotly.express as px
+from datetime import datetime
 
-# --- CONFIG ---
-st.set_page_config(page_title="Samareta Pro Dashboard", layout="wide", page_icon="🚀")
-st.title("🚀 Samareta Business Intelligence Pro")
+# --- 1. DATA MODAL (Sesuai List Anda) ---
+# Data ini dipetakan agar sistem mencari nama terpanjang lebih dulu
+DAFTAR_MODAL = {
+    "Arkanda kotak-kokak mul (paket isi 4)": 120000,
+    "Arkanda kotak-kokak mul (paket isi 3)": 100000,
+    "Arkanda kotak-kokak mul (paket isi 2)": 60000,
+    "Arkanda kotak-kokak mul": 30000,
+    "Baron - Kaos pendek jumbo baby terry (isi 4)": 104000,
+    "Baron - Kaos pendek jumbo baby terry": 26000,
+    "celana jumbo kaos wanita itachi (paket isi 5)": 580000,
+    "celana jumbo kaos wanita itachi (paket isi 4)": 116000,
+    "celana jumbo kaos wanita itachi (paket isi 3)": 87000,
+    "Celana kaos jumbo wanita itachi": 21000,
+    "Nollan paket isi 3": 78000,
+    "Celana kaos nollan": 26000,
+    "celana kaos pria alaska jumbo (paket isi 5)": 130000,
+    "celana kaos pria alaska jumbo (paket isi 3)": 87000,
+    "Celana kaos pria alaska jumbo di bawah lutut": 21000,
+    "Celana kotak isi 3 Yanto di atas lutut": 75000,
+    "Celana kurduroy Yanto": 33000,
+    "Celana pendek paket isi 3": 60000,
+    "Celana santai kaos pria itaka (paket isi 3)": 100000,
+    "Celana sirwal Ayah": 75000,
+    "Celana tribal paket isi 3 yanto": 75000,
+    "Celana tribal motif Yanto kantau": 25000,
+    "Daisy paket isi 4": 132000,
+    "Daisy paket isi 3": 91000,
+    "Daisy paket isi 2": 66000,
+    "Daisy": 33000,
+    "Florals lavender (paket isi 2)": 46000,
+    "Jumbo Yanto (paket isi 2)": 66000,
+    "Jumbo Yanto": 33000,
+    "Loan cargo pendek premium": 52000,
+    "Loreng cargo 7/8 (paket isi 2)": 64000,
+    "Loreng cargo 7/8": 32000,
+    "Nado paket isi 4": 104000,
+    "Nado pants isi 3": 90000,
+    "Nado pants isi 2": 60000,
+    "Nado Pants": 26000,
+    "Nesa paket isi 3": 100000,
+    "Nesa": 30000,
+    "Noah paket isi 3": 94500,
+    "Noah paket isi 2": 63000,
+    "Noah Jumbo": 35000,
+    "Noah": 31500,
+    "Noka paket isi 4 rami di bawah lutut": 104000,
+    "noka paket isi 3": 78000,
+    "Noka paket isi 2": 52000,
+    "Noka rami di bawah lutut": 26000,
+    "Paket isi 3 sizukan": 75000,
+    "Raskal (paket isi 3)": 114000,
+    "Raskal - Cargo kantong 3": 38000,
+    "Ratali pants (paket isi 4)": 116000,
+    "Ratali pants (paket isi 3)": 87000,
+    "Ratali Pants (kaos baby terry jumbo di bawah lutut)": 21000,
+    "Tiedye Hotpants": 60000,
+    "Tiedye XXL Paket isi 3": 100000,
+    "Tiedye XXL": 30000,
+    "Tiedye XL paket isi 3": 100000,
+    "Tiedye XL": 30000,
+    "Titan paket isi 3": 75000,
+    "Tora Loreng cargo army (paket isi 2)": 64000,
+    "Tora Loreng cargo army": 32000,
+    "Ziatbu (paket isi 3)": 91000,
+    "Ziatbu": 33000,
+    "Celana pendek Yovas di atas lutut - Hawaii": 28000,
+    "Bebos": 43000,
+    "Bernadi levis BND": 43000
+}
 
-# --- LOAD SECRETS ---
-try:
-    daftar_modal = st.secrets["MODAL_PRODUK"]
-    modal_default = st.secrets.get("MODAL_DEFAULT", 25000)
-except:
-    daftar_modal = {"DEFAULT": 25000}
-    modal_default = 25000
+# --- 2. CONFIG DASHBOARD ---
+st.set_page_config(page_title="Samareta Pro Analytics", layout="wide", page_icon="🚀")
+st.title("🚀 Samareta Business Dashboard")
 
-# --- SIDEBAR: SUPER FILTERS ---
+# --- 3. SIDEBAR FILTERS ---
 with st.sidebar:
-    st.header("🔍 Filter Komprehensif")
+    st.header("🔍 Filter Data")
     uploaded_file = st.file_uploader("Upload CSV TikTok", type=["csv"])
     st.divider()
     
     if uploaded_file:
         df_raw = pd.read_csv(uploaded_file)
-        # Pre-processing Tanggal
+        # Clean Data Tanggal & Uang (TikTok CSV often has tabs '\t')
         df_raw['Created Time'] = pd.to_datetime(df_raw['Created Time'].str.strip(), dayfirst=True, errors='coerce')
+        df_raw['SKU Subtotal After Discount'] = pd.to_numeric(df_raw['SKU Subtotal After Discount'], errors='coerce').fillna(0)
         
-        # 1. Filter Rentang Waktu
+        # Date Filter
         min_date = df_raw['Created Time'].min().date()
         max_date = df_raw['Created Time'].max().date()
-        date_range = st.date_input("📅 Rentang Waktu", [min_date, max_date])
+        date_range = st.date_input("Rentang Waktu", [min_date, max_date])
         
-        # 2. Filter Kategori & Status
-        categories = df_raw['Product Category'].unique().tolist()
-        sel_cat = st.multiselect("📦 Kategori Produk", categories, default=categories)
-        
+        # Status Filter
         status_list = df_raw['Order Status'].unique().tolist()
-        sel_status = st.multiselect("📋 Status Pesanan", status_list, default=["Selesai"])
+        sel_status = st.multiselect("Status Pesanan", status_list, default=["Selesai"])
         
-        # 3. Filter Metode Pembayaran & Wilayah
-        pay_methods = df_raw['Payment Method'].unique().tolist()
-        sel_pay = st.multiselect("💳 Metode Pembayaran", pay_methods, default=pay_methods)
-        
-        provinces = df_raw['Province'].unique().tolist()
-        sel_prov = st.multiselect("📍 Wilayah (Provinsi)", provinces, default=provinces)
+        # Payment Filter
+        pay_list = df_raw['Payment Method'].unique().tolist()
+        sel_pay = st.multiselect("Metode Pembayaran", pay_list, default=pay_list)
 
-# --- LOGIKA DASHBOARD ---
+# --- 4. LOGIKA PERHITUNGAN ---
 if uploaded_file:
     try:
-        # Apply All Filters
         df = df_raw.copy()
+        
+        # Jalankan Filter
         if len(date_range) == 2:
             df = df[(df['Created Time'].dt.date >= date_range[0]) & (df['Created Time'].dt.date <= date_range[1])]
-        
         df = df[df['Order Status'].isin(sel_status)]
-        df = df[df['Product Category'].isin(sel_cat)]
         df = df[df['Payment Method'].isin(sel_pay)]
-        df = df[df['Province'].isin(sel_prov)]
 
-        # Kolom Uang TikTok
-        col_uang = 'SKU Subtotal After Discount'
+        # Fungsi Hitung Modal Cerdas (Longest Match First)
+        def get_cogs(row):
+            nama_csv = str(row['Product Name']).lower()
+            # Urutkan kunci dari yang terpanjang agar "Paket isi 3" ketemu sebelum "Satuan"
+            sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
+            for kunci in sorted_keys:
+                if kunci.lower() in nama_csv:
+                    return DAFTAR_MODAL[kunci]
+            return 25000 * row['Quantity'] # Default jika tidak ada di list
 
-        # Hitung Modal & Profit
-        def hitung_modal(row):
-            nama = str(row['Product Name']).lower()
-            qty = row['Quantity']
-            for k, v in daftar_modal.items():
-                if k.lower() in nama: return v * qty
-            return modal_default * qty
+        df['Total_Modal'] = df.apply(get_cogs, axis=1)
+        df['Net_Profit'] = df['SKU Subtotal After Discount'] - df['Total_Modal']
 
-        df['Total_Modal'] = df.apply(hitung_modal, axis=1)
-        df['Profit'] = df[col_uang] - df['Total_Modal']
-
-        # --- 1. KEY METRICS ---
+        # --- 5. TAMPILAN METRIK ---
         m1, m2, m3, m4 = st.columns(4)
-        total_omset = df[col_uang].sum()
-        total_profit = df['Profit'].sum()
-        total_qty = df['Quantity'].sum()
+        omset = df['SKU Subtotal After Discount'].sum()
+        profit = df['Net_Profit'].sum()
         
-        m1.metric("Total Omset", f"Rp {total_omset:,.0f}")
-        m2.metric("Total Profit", f"Rp {total_profit:,.0f}")
-        m3.metric("Total Produk Terjual", f"{total_qty} pcs")
-        m4.metric("Jatah Per Orang (Bagi 3)", f"Rp {total_profit/3:,.0f}")
+        m1.metric("Total Omset", f"Rp {omset:,.0f}")
+        m2.metric("Total Modal", f"Rp {df['Total_Modal'].sum():,.0f}")
+        m3.metric("Profit Bersih", f"Rp {profit:,.0f}")
+        m4.metric("Jatah Per Orang (1/3)", f"Rp {profit/3:,.0f}")
 
-        # --- 2. VISUALISASI BARIS 1: TREN & KATEGORI ---
+        # --- 6. VISUALISASI ---
         st.divider()
         c1, c2 = st.columns([2, 1])
         
         with c1:
-            st.subheader("📈 Tren Penjualan Harian")
-            daily_sales = df.groupby(df['Created Time'].dt.date)[col_uang].sum().reset_index()
-            fig_trend = px.line(daily_sales, x='Created Time', y=col_uang, title="Omset Per Hari")
-            st.plotly_chart(fig_trend, use_container_width=True)
-        
+            st.subheader("📈 Tren Omset Harian")
+            daily = df.groupby(df['Created Time'].dt.date)['SKU Subtotal After Discount'].sum().reset_index()
+            fig_line = px.line(daily, x='Created Time', y='SKU Subtotal After Discount', markers=True)
+            st.plotly_chart(fig_line, use_container_width=True)
+            
         with c2:
-            st.subheader("🍕 Proporsi Kategori")
-            fig_pie = px.pie(df, values=col_uang, names='Product Category', hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.subheader("📍 Top 10 Kota")
+            top_city = df.groupby('Regency and City')['SKU Subtotal After Discount'].sum().sort_values(ascending=False).head(10).reset_index()
+            fig_bar = px.bar(top_city, x='SKU Subtotal After Discount', y='Regency and City', orientation='h', color='SKU Subtotal After Discount')
+            st.plotly_chart(fig_bar, use_container_width=True)
 
-        # --- 3. VISUALISASI BARIS 2: WILAYAH & PEMBAYARAN ---
-        c3, c4 = st.columns(2)
-        
-        with c3:
-            st.subheader("📍 Top 10 Kota/Kabupaten")
-            city_sales = df.groupby('Regency and City')[col_uang].sum().sort_values(ascending=False).head(10).reset_index()
-            fig_city = px.bar(city_sales, x=col_uang, y='Regency and City', orientation='h', color=col_uang)
-            st.plotly_chart(fig_city, use_container_width=True)
-            
-        with c4:
-            st.subheader("💳 Metode Pembayaran Terpopuler")
-            pay_counts = df.groupby('Payment Method').size().reset_index(name='Jumlah')
-            fig_pay = px.bar(pay_counts, x='Payment Method', y='Jumlah', color='Payment Method')
-            st.plotly_chart(fig_pay, use_container_width=True)
-
-        # --- 4. DATA TABLE & AI ANALYSIS ---
+        # --- 7. TABEL & AI ---
         st.divider()
-        col_tab, col_ai = st.columns([1, 1])
+        t1, t2 = st.columns(2)
         
-        with col_tab:
+        with t1:
             st.subheader("📋 Ringkasan Per Produk")
-            product_summary = df.groupby('Product Name').agg({
+            summary = df.groupby('Product Name').agg({
                 'Quantity': 'sum',
-                col_uang: 'sum',
-                'Profit': 'sum'
-            }).sort_values(by='Profit', ascending=False)
-            st.dataframe(product_summary, use_container_width=True)
+                'SKU Subtotal After Discount': 'sum',
+                'Net_Profit': 'sum'
+            }).sort_values('Net_Profit', ascending=False)
+            st.dataframe(summary, use_container_width=True)
 
-        with col_ai:
-            st.subheader("🤖 Analisis Strategis AI")
-            user_ask = st.text_area("Tanya AI (Contoh: Mengapa profit rendah di wilayah tertentu?)")
+        with t2:
+            st.subheader("🤖 AI Strategis Manager")
+            user_ask = st.text_area("Tanya AI tentang data ini:", placeholder="Contoh: Produk mana yang marginnya paling tipis?")
             
-            if st.button("Jalankan Analisis"):
-                api_key = st.secrets["GEMINI_API_KEY"]
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                
-                # Kirim data ringkas yang lebih kaya
-                context = f"""
-                Data Terfilter:
-                Periode: {date_range}
-                Top Kota: {city_sales['Regency and City'].head(3).tolist()}
-                Top Produk: {product_summary.head(3).index.tolist()}
-                Total Profit: Rp {total_profit:,.0f}
-                
-                Instruksi: {user_ask}
-                """
-                
-                with st.spinner("AI sedang membaca tren data Anda..."):
-                    res = model.generate_content(context)
-                    st.info(res.text)
+            if st.button("Tanya AI"):
+                try:
+                    api_key = st.secrets["GEMINI_API_KEY"]
+                    genai.configure(api_key=api_key)
+                    
+                    # Detect Model
+                    models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                    selected_model = next((m for m in models if 'flash' in m), models[0])
+                    model = genai.GenerativeModel(selected_model)
+                    
+                    # Context untuk AI
+                    prompt = f"""
+                    Data Samareta:
+                    Periode: {date_range}
+                    Total Profit: Rp {profit:,.0f}
+                    Top 3 Produk Untung: {summary.head(3).index.tolist()}
+                    
+                    Pertanyaan User: {user_ask}
+                    """
+                    
+                    with st.spinner("AI sedang menganalisis..."):
+                        response = model.generate_content(prompt)
+                        st.info(response.text)
+                except Exception as e:
+                    st.error(f"Gagal memanggil AI: {e}")
 
     except Exception as e:
-        st.error(f"Terjadi kesalahan teknis: {e}")
+        st.error(f"Error: {e}")
 else:
-    st.info("👋 Selamat Datang! Silakan unggah file CSV ekspor TikTok Anda di sidebar untuk melihat analisis lengkap.")
+    st.info("💡 Silakan unggah file CSV pesanan TikTok untuk melihat dashboard.")
