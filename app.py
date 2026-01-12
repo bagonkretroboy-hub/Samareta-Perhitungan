@@ -4,14 +4,14 @@ import google.generativeai as genai
 import plotly.express as px
 
 # --- CONFIG DASHBOARD ---
-st.set_page_config(page_title="Samareta Intelligence Pro", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Samareta Pro", layout="wide", page_icon="📊")
 
-# Custom CSS: Mengecilkan tulisan metrik sesuai permintaan Anda
+# Custom CSS: Mengecilkan tulisan metrik
 st.markdown("""
     <style>
-    [data-testid="stMetricLabel"] { font-size: 13px !important; color: #666666 !important; }
-    [data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700 !important; color: #1f1f1f !important; }
-    [data-testid="stMetric"] { background-color: #ffffff; padding: 5px 10px !important; border-radius: 8px; border: 1px solid #eeeeee; }
+    [data-testid="stMetricLabel"] { font-size: 13px !important; }
+    [data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700 !important; }
+    [data-testid="stMetric"] { background-color: #ffffff; padding: 5px 10px !important; border: 1px solid #eeeeee; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -21,8 +21,8 @@ st.title("📊 Samareta Business Intelligence")
 try:
     DAFTAR_MODAL = st.secrets["MODAL_PRODUK"]
     API_KEY = st.secrets["GEMINI_API_KEY"]
-except Exception as e:
-    st.error("Konfigurasi Secrets bermasalah!")
+except Exception:
+    st.error("Secrets tidak ditemukan!")
     st.stop()
 
 # --- SIDEBAR ---
@@ -32,13 +32,12 @@ with st.sidebar:
     if uploaded_file:
         df_raw = pd.read_csv(uploaded_file)
         df_raw = df_raw.applymap(lambda x: x.strip().replace('\t', '') if isinstance(x, str) else x)
-        df_raw.columns = [c.strip().replace('\t', '') for c in df_raw.columns]
+        df_raw.columns = [c.strip() for c in df_raw.columns]
         df_raw['Created Time'] = pd.to_datetime(df_raw['Created Time'], dayfirst=True, errors='coerce')
         
-        min_date = df_raw['Created Time'].min().date()
-        max_date = df_raw['Created Time'].max().date()
-        date_range = st.date_input("Rentang Waktu", [min_date, max_date])
-        sel_status = st.multiselect("Status Pesanan", df_raw['Order Status'].unique().tolist(), default=["Selesai"])
+        min_d, max_d = df_raw['Created Time'].min().date(), df_raw['Created Time'].max().date()
+        date_range = st.date_input("Rentang Waktu", [min_d, max_d])
+        sel_status = st.multiselect("Status", df_raw['Order Status'].unique().tolist(), default=["Selesai"])
 
 # --- PROSES DATA ---
 if uploaded_file:
@@ -51,72 +50,58 @@ if uploaded_file:
         col_uang = 'SKU Subtotal After Discount'
         df[col_uang] = pd.to_numeric(df[col_uang], errors='coerce').fillna(0)
 
-        # FUNGSI HITUNG MODAL
         def get_cogs(row):
-            nama_p = str(row['Product Name']).lower()
-            qty = row['Quantity']
-            sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
-            for k in sorted_keys:
-                if k.lower() in nama_p:
+            nm, qty = str(row['Product Name']).lower(), row['Quantity']
+            sorted_k = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
+            for k in sorted_k:
+                if k.lower() in nm:
                     return DAFTAR_MODAL[k] if "paket" in k.lower() else DAFTAR_MODAL[k] * qty
             return 0
 
         df['Total_Modal'] = df.apply(get_cogs, axis=1)
         df['Net_Profit'] = df[col_uang] - df['Total_Modal']
 
-        # VALIDASI PRODUK 0
-        unmapped = df[df['Total_Modal'] == 0]['Product Name'].unique()
-        if len(unmapped) > 0:
-            st.warning(f"⚠️ {len(unmapped)} Produk belum ada harga modal.")
-
-        # --- TAMPILAN METRIK ---
+        # METRIK
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
         omset, modal, profit = df[col_uang].sum(), df['Total_Modal'].sum(), df['Net_Profit'].sum()
-        
         m1.metric("Total Omset", f"Rp {omset:,.0f}")
         m2.metric("Total Modal", f"Rp {modal:,.0f}")
         m3.metric("Profit Bersih", f"Rp {profit:,.0f}")
         m4.metric("Bagi Hasil (1/3)", f"Rp {profit/3:,.0f}")
 
-        # --- VISUALISASI ---
-        cl, cr = st.columns([2,1])
-        with cl:
+        # VISUALISASI
+        c1, c2 = st.columns([2,1])
+        with c1:
             daily = df.groupby(df['Created Time'].dt.date)[col_uang].sum().reset_index()
             st.plotly_chart(px.line(daily, x='Created Time', y=col_uang, template="plotly_white"), use_container_width=True)
-        with cr:
+        with c2:
             st.plotly_chart(px.pie(df, values=col_uang, names='Product Category', hole=0.4), use_container_width=True)
 
-        # --- TABEL DETAIL ---
-        st.subheader("📋 Ringkasan Per Produk")
-        summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang':'sum', 'Net_Profit':'sum'}).sort_values('Net_Profit', ascending=False)
+        # TABEL (BAGIAN YANG TADI ERROR SUDAH DIPERBAIKI)
+        st.subheader("📋 Performa Produk")
+        summary = df.groupby('Product Name').agg({
+            'Quantity': 'sum',
+            col_uang: 'sum',
+            'Net_Profit': 'sum'
+        })
+        summary = summary.sort_values('Net_Profit', ascending=False)
         st.dataframe(summary, use_container_width=True)
 
-        # --- AI STRATEGIST (MULTI-MODEL FALLBACK) ---
+        # AI STRATEGIST
         st.divider()
-        st.subheader("🤖 AI Strategist")
         u_in = st.text_input("Tanya AI Manager:")
         if st.button("Analisis") and u_in:
             genai.configure(api_key=API_KEY)
-            # Daftar model yang akan dicoba satu per satu
-            available_models = ['gemini-1.5-flash-latest', 'gemini-1.5-pro-latest', 'gemini-pro']
-            
-            success = False
-            for model_name in available_models:
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    prompt = f"Data Samareta: Omset {omset}, Profit {profit}. Pertanyaan: {u_in}"
-                    response = model.generate_content(prompt)
-                    st.info(f"💡 (AI: {model_name})\n\n{response.text}")
-                    success = True
-                    break # Berhenti jika satu model berhasil
-                except:
-                    continue
-            
-            if not success:
-                st.error("Semua model AI sedang sibuk atau tidak tersedia. Pastikan API Key Anda aktif di Google AI Studio.")
+            # Mencoba model flash terbaru
+            try:
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                res = model.generate_content(f"Data: Omset {omset}, Profit {profit}. Tanya: {u_in}")
+                st.info(res.text)
+            except:
+                st.error("AI sedang tidak tersedia. Periksa API Key Anda.")
 
     except Exception as e:
-        st.error(f"Error Data: {e}")
+        st.error(f"Error: {e}")
 else:
     st.info("Silakan unggah file CSV di sidebar.")
