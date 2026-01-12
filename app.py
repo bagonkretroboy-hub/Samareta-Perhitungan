@@ -87,24 +87,34 @@ if uploaded_file:
         with cr:
             st.plotly_chart(px.pie(df, values=col_uang, names='Product Category', hole=0.4), use_container_width=True)
 
-        # --- TABEL DETAIL (BARIS YANG TADI ERROR SUDAH DISAMBUNG) ---
+        # --- TABEL DETAIL ---
         st.subheader("📋 Ringkasan Per Produk")
-        summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang:'sum', 'Net_Profit':'sum'}).sort_values('Net_Profit', ascending=False)
+        summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang':'sum', 'Net_Profit':'sum'}).sort_values('Net_Profit', ascending=False)
         st.dataframe(summary, use_container_width=True)
 
-        # --- AI STRATEGIST ---
+        # --- AI STRATEGIST (MULTI-MODEL FALLBACK) ---
         st.divider()
         st.subheader("🤖 AI Strategist")
         u_in = st.text_input("Tanya AI Manager:")
         if st.button("Analisis") and u_in:
-            try:
-                genai.configure(api_key=API_KEY)
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                prompt = f"Data Samareta: Omset {omset}, Profit {profit}. Pertanyaan: {u_in}"
-                response = model.generate_content(prompt)
-                st.info(response.text)
-            except Exception as e:
-                st.error(f"Gagal memanggil AI: {e}")
+            genai.configure(api_key=API_KEY)
+            # Daftar model yang akan dicoba satu per satu
+            available_models = ['gemini-1.5-flash-latest', 'gemini-1.5-pro-latest', 'gemini-pro']
+            
+            success = False
+            for model_name in available_models:
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    prompt = f"Data Samareta: Omset {omset}, Profit {profit}. Pertanyaan: {u_in}"
+                    response = model.generate_content(prompt)
+                    st.info(f"💡 (AI: {model_name})\n\n{response.text}")
+                    success = True
+                    break # Berhenti jika satu model berhasil
+                except:
+                    continue
+            
+            if not success:
+                st.error("Semua model AI sedang sibuk atau tidak tersedia. Pastikan API Key Anda aktif di Google AI Studio.")
 
     except Exception as e:
         st.error(f"Error Data: {e}")
