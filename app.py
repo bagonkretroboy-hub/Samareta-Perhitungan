@@ -20,13 +20,12 @@ st.markdown("""
         font-weight: 700 !important;
         color: #1f1f1f !important;
     }
-    /* Mengatur jarak antar box metrik */
+    /* Mengatur box metrik agar lebih ramping */
     [data-testid="stMetric"] {
         background-color: #ffffff;
-        padding: 8px 12px !important;
+        padding: 5px 10px !important;
         border-radius: 8px;
         border: 1px solid #eeeeee;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -49,7 +48,7 @@ with st.sidebar:
     
     if uploaded_file:
         df_raw = pd.read_csv(uploaded_file)
-        # Menghilangkan tab tersembunyi
+        # Menghilangkan tab tersembunyi & spasi
         df_raw = df_raw.applymap(lambda x: x.strip().replace('\t', '') if isinstance(x, str) else x)
         df_raw.columns = [c.strip().replace('\t', '') for c in df_raw.columns]
         
@@ -73,10 +72,11 @@ if uploaded_file:
         col_uang = 'SKU Subtotal After Discount'
         df[col_uang] = pd.to_numeric(df[col_uang], errors='coerce').fillna(0)
 
-        # LOGIKA HITUNG MODAL
+        # --- FUNGSI HITUNG MODAL (SINTAKS FIX) ---
         def get_cogs(row):
             nama_produk = str(row['Product Name']).lower()
             quantity = row['Quantity']
+            # Cari kunci terpanjang dulu
             sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
             for kunci in sorted_keys:
                 kunci_low = kunci.lower()
@@ -86,4 +86,10 @@ if uploaded_file:
                     return DAFTAR_MODAL[kunci] * quantity
             return 0
 
-        df['Total_Modal'] = df.apply(get_c
+        # Baris yang tadi error dipastikan lengkap di sini:
+        df['Total_Modal'] = df.apply(get_cogs, axis=1)
+        df['Net_Profit'] = df[col_uang] - df['Total_Modal']
+
+        # WARNING PRODUK 0
+        unmapped = df[df['Total_Modal'] == 0]['Product Name'].unique()
+        if len(un
