@@ -6,12 +6,12 @@ import plotly.express as px
 # --- CONFIG DASHBOARD ---
 st.set_page_config(page_title="Samareta Pro", layout="wide", page_icon="📊")
 
-# CSS untuk mengecilkan tulisan metrik
+# Custom CSS: Mengecilkan tulisan metrik
 st.markdown("""
     <style>
-    [data-testid="stMetricLabel"] { font-size: 13px !important; }
+    [data-testid="stMetricLabel"] { font-size: 13px !important; color: #666666 !important; }
     [data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700 !important; }
-    [data-testid="stMetric"] { background-color: #ffffff; padding: 5px 10px !important; border: 1px solid #eeeeee; border-radius: 8px; }
+    [data-testid="stMetric"] { background-color: #ffffff; padding: 5px 10px !important; border-radius: 8px; border: 1px solid #eeeeee; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -22,7 +22,7 @@ try:
     DAFTAR_MODAL = st.secrets["MODAL_PRODUK"]
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except Exception:
-    st.error("Gagal memuat Secrets. Pastikan format di Streamlit Cloud sudah benar.")
+    st.error("Konfigurasi Secrets tidak ditemukan!")
     st.stop()
 
 # --- SIDEBAR ---
@@ -31,7 +31,6 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload CSV TikTok", type=["csv"])
     if uploaded_file:
         df_raw = pd.read_csv(uploaded_file)
-        # Bersihkan data dari spasi atau tab tersembunyi
         df_raw = df_raw.applymap(lambda x: x.strip().replace('\t', '') if isinstance(x, str) else x)
         df_raw.columns = [c.strip() for c in df_raw.columns]
         df_raw['Created Time'] = pd.to_datetime(df_raw['Created Time'], dayfirst=True, errors='coerce')
@@ -51,13 +50,11 @@ if uploaded_file:
         col_uang = 'SKU Subtotal After Discount'
         df[col_uang] = pd.to_numeric(df[col_uang], errors='coerce').fillna(0)
 
-        # Fungsi pencocokan modal
         def get_cogs(row):
             nm, qty = str(row['Product Name']).lower(), row['Quantity']
             sorted_k = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
             for k in sorted_k:
                 if k.lower() in nm:
-                    # Jika ada kata paket, ambil harga langsung. Jika tidak, kali quantity.
                     return DAFTAR_MODAL[k] if "paket" in k.lower() else DAFTAR_MODAL[k] * qty
             return 0
 
@@ -68,38 +65,35 @@ if uploaded_file:
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
         omset, modal, profit = df[col_uang].sum(), df['Total_Modal'].sum(), df['Net_Profit'].sum()
-        
         m1.metric("Total Omset", f"Rp {omset:,.0f}")
         m2.metric("Total Modal", f"Rp {modal:,.0f}")
         m3.metric("Profit Bersih", f"Rp {profit:,.0f}")
         m4.metric("Bagi Hasil (1/3)", f"Rp {profit/3:,.0f}")
 
-        # VISUALISASI
-        c1, c2 = st.columns([2,1])
-        with c1:
-            daily = df.groupby(df['Created Time'].dt.date)[col_uang].sum().reset_index()
-            st.plotly_chart(px.line(daily, x='Created Time', y=col_uang, template="plotly_white"), use_container_width=True)
-        with c2:
-            st.plotly_chart(px.pie(df, values=col_uang, names='Product Category', hole=0.4), use_container_width=True)
-
-        # TABEL RINGKASAN
+        # TABEL
         st.subheader("📋 Performa Produk")
-        summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang:'sum', 'Net_Profit':'sum'})
-        summary = summary.sort_values('Net_Profit', ascending=False)
+        summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang:'sum', 'Net_Profit':'sum'}).sort_values('Net_Profit', ascending=False)
         st.dataframe(summary, use_container_width=True)
 
-        # AI STRATEGIST
+        # AI STRATEGIST (VERSI FIX 404)
         st.divider()
+        st.subheader("🤖 AI Strategist")
         u_in = st.text_input("Tanya AI Manager:")
         if st.button("Analisis") and u_in:
-            genai.configure(api_key=API_KEY)
             try:
-                # Menggunakan model flash terbaru
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                res = model.generate_content(f"Data: Omset {omset}, Profit {profit}. Tanya: {u_in}")
-                st.info(res.text)
+                genai.configure(api_key=API_KEY)
+                
+                # Mencari model yang tersedia secara otomatis
+                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                # Pilih gemini-1.5-flash jika ada, jika tidak pilih yang pertama
+                selected_model = next((m for m in models if "1.5-flash" in m), models[0])
+                
+                model = genai.GenerativeModel(selected_model)
+                prompt = f"Data: Omset {omset}, Profit {profit}. Tanya: {u_in}"
+                res = model.generate_content(prompt)
+                st.info(f"💡 AI Model: {selected_model}\n\n{res.text}")
             except Exception as e:
-                st.error(f"AI Error: {e}")
+                st.error(f"Gagal memanggil AI: {e}")
 
     except Exception as e:
         st.error(f"Error: {e}")
