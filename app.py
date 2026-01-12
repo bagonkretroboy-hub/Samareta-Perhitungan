@@ -6,12 +6,27 @@ import plotly.express as px
 # --- CONFIG DASHBOARD ---
 st.set_page_config(page_title="Samareta Intelligence Pro", layout="wide", page_icon="📊")
 
-# Custom CSS: Mengecilkan tulisan metrik sesuai permintaan
+# Custom CSS: Mengecilkan tulisan metrik dan box
 st.markdown("""
     <style>
-    [data-testid="stMetricLabel"] { font-size: 13px !important; color: #666666 !important; }
-    [data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700 !important; color: #1f1f1f !important; }
-    [data-testid="stMetric"] { background-color: #ffffff; padding: 5px 10px !important; border-radius: 8px; border: 1px solid #eeeeee; }
+    /* Mengecilkan Label Metrik (Judul) */
+    [data-testid="stMetricLabel"] { 
+        font-size: 13px !important; 
+        color: #666666 !important; 
+    }
+    /* Mengecilkan Angka Metrik (Nilai) */
+    [data-testid="stMetricValue"] { 
+        font-size: 20px !important; 
+        font-weight: 700 !important; 
+        color: #1f1f1f !important; 
+    }
+    /* Merapikan box metrik */
+    [data-testid="stMetric"] { 
+        background-color: #ffffff; 
+        padding: 5px 10px !important; 
+        border-radius: 8px; 
+        border: 1px solid #eeeeee; 
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -22,7 +37,7 @@ try:
     DAFTAR_MODAL = st.secrets["MODAL_PRODUK"]
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except Exception as e:
-    st.error("Konfigurasi Secrets bermasalah!")
+    st.error("Konfigurasi Secrets bermasalah! Pastikan GEMINI_API_KEY dan MODAL_PRODUK sudah benar.")
     st.stop()
 
 # --- SIDEBAR ---
@@ -31,6 +46,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload CSV TikTok", type=["csv"])
     if uploaded_file:
         df_raw = pd.read_csv(uploaded_file)
+        # Bersihkan karakter tab dan spasi
         df_raw = df_raw.applymap(lambda x: x.strip().replace('\t', '') if isinstance(x, str) else x)
         df_raw.columns = [c.strip().replace('\t', '') for c in df_raw.columns]
         df_raw['Created Time'] = pd.to_datetime(df_raw['Created Time'], dayfirst=True, errors='coerce')
@@ -64,12 +80,12 @@ if uploaded_file:
         df['Total_Modal'] = df.apply(get_cogs, axis=1)
         df['Net_Profit'] = df[col_uang] - df['Total_Modal']
 
-        # VALIDASI PRODUK 0 (BAGIAN YANG TADI ERROR)
+        # VALIDASI PRODUK 0
         unmapped = df[df['Total_Modal'] == 0]['Product Name'].unique()
         if len(unmapped) > 0:
             st.warning(f"⚠️ {len(unmapped)} Produk belum ada harga modal.")
 
-        # --- TAMPILAN METRIK ---
+        # --- TAMPILAN METRIK (UKURAN KECIL) ---
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
         omset, modal, profit = df[col_uang].sum(), df['Total_Modal'].sum(), df['Net_Profit'].sum()
@@ -87,24 +103,6 @@ if uploaded_file:
         with cr:
             st.plotly_chart(px.pie(df, values=col_uang, names='Product Category', hole=0.4), use_container_width=True)
 
-        # --- TABEL & AI ---
+        # --- TABEL DETAIL ---
         st.subheader("📋 Ringkasan Per Produk")
-        summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang:'sum', 'Net_Profit':'sum'}).sort_values('Net_Profit', ascending=False)
-        st.dataframe(summary, use_container_width=True)
-
-        st.divider()
-        st.subheader("🤖 AI Analyst")
-        u_in = st.text_input("Tanya AI Manager:")
-        if st.button("Analisis") and u_in:
-            genai.configure(api_key=API_KEY)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            prompt = f"Data: Omset {omset}, Profit {profit}. Tanya: {u_in}"
-            try:
-                st.info(model.generate_content(prompt).text)
-            except:
-                st.info(genai.GenerativeModel('gemini-pro').generate_content(prompt).text)
-
-    except Exception as e:
-        st.error(f"Error: {e}")
-else:
-    st.info("Silakan unggah file CSV di sidebar.")
+        summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang:'sum', 'Net_Profit':'sum'}).
