@@ -4,9 +4,9 @@ import google.generativeai as genai
 import plotly.express as px
 
 # --- CONFIG DASHBOARD ---
-st.set_page_config(page_title="Samareta Audit Intelligence", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Samareta Settlement Pro", layout="wide", page_icon="💰")
 
-# --- CUSTOM CSS (HIGH CONTRAST DARK MODE) ---
+# --- CUSTOM CSS (DARK MODE & CONTRAST) ---
 st.markdown("""
     <style>
     [data-testid="stMetric"] {
@@ -21,14 +21,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📊 Samareta Business Intelligence (Audit Mode)")
+st.title("💰 Samareta Accurate Settlement")
 
 # --- LOAD SECRETS ---
 try:
     DAFTAR_MODAL = st.secrets["MODAL_PRODUK"]
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except:
-    st.error("Secrets (MODAL_PRODUK / GEMINI_API_KEY) belum dikonfigurasi di Streamlit Cloud!")
+    st.error("Secrets belum dikonfigurasi!")
     st.stop()
 
 # --- SIDEBAR ---
@@ -36,7 +36,8 @@ with st.sidebar:
     st.header("⚙️ Data Source")
     file_order = st.file_uploader("1. Upload CSV PESANAN", type=["csv"])
     file_settle = st.file_uploader("2. Upload CSV SETTLEMENT (Income)", type=["csv"])
-    st.info("Sistem akan memvalidasi apakah setiap produk sudah memiliki harga modal di Secrets.")
+    st.divider()
+    st.info("Rumus: (Settlement + Ongkir Kurir) - Modal = Profit Murni")
 
 # --- PROSES DATA ---
 if file_order and file_settle:
@@ -48,7 +49,7 @@ if file_order and file_settle:
         df_order.columns = [c.strip() for c in df_order.columns]
         df_settle.columns = [c.replace('  ', ' ').strip() for c in df_settle.columns]
 
-        # 2. ANTI-DUPLIKASI (PENTING AGAR TIDAK BENGKAK)
+        # 2. Filter Tipe & Duplikat
         if 'Type' in df_settle.columns:
             df_settle = df_settle[df_settle['Type'] == 'Order']
         
@@ -66,8 +67,15 @@ if file_order and file_settle:
 
         # 4. Konversi Uang & Waktu
         col_uang = 'Total settlement amount'
+        col_ongkir = 'Shipping costs passed on to the logistics provider'
+        
         df_final[col_uang] = pd.to_numeric(df_final[col_uang], errors='coerce').fillna(0)
+        df_final[col_ongkir] = pd.to_numeric(df_final[col_ongkir], errors='coerce').fillna(0)
         df_final['Order settled time'] = pd.to_datetime(df_final['Order settled time'], errors='coerce')
+
+        # --- LOGIKA PROFIT AKURAT ---
+        # Net_Revenue adalah uang cair setelah dibersihkan dari biaya ongkir yang numpang lewat
+        df_final['Net_Revenue'] = df_final[col_uang] + df_final[col_ongkir]
 
         # 5. Filter Tanggal
         min_d, max_d = df_final['Order settled time'].min().date(), df_final['Order settled time'].max().date()
@@ -75,74 +83,60 @@ if file_order and file_settle:
         if len(dr) == 2:
             df_final = df_final[(df_final['Order settled time'].dt.date >= dr[0]) & (df_final['Order settled time'].dt.date <= dr[1])]
 
-        # 6. LOGIKA AUDIT MODAL
+        # 6. Logika Modal
         def get_cogs_audit(row):
             nm, qty = str(row['Product Name']).lower(), row['Quantity']
             sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
             for k in sorted_keys:
                 if k.lower() in nm:
-                    # Menghitung modal
                     val = DAFTAR_MODAL[k] if "paket" in k.lower() else DAFTAR_MODAL[k] * qty
-                    return val, True # Ketemu
-            return 0, False # Tidak ketemu
+                    return val, True
+            return 0, False
 
         audit_results = df_final.apply(get_cogs_audit, axis=1)
         df_final['Total_Modal'] = [x[0] for x in audit_results]
         df_final['Modal_Found'] = [x[1] for x in audit_results]
-        df_final['Net_Profit'] = df_final[col_uang] - df_final['Total_Modal']
+        df_final['Actual_Profit'] = df_final['Net_Revenue'] - df_final['Total_Modal']
 
         # --- NOTIFIKASI AUDIT ---
         not_found = df_final[df_final['Modal_Found'] == False]
         if not not_found.empty:
-            st.warning(f"⚠️ Ditemukan {len(not_found)} transaksi tanpa harga modal di Secrets!")
-            with st.expander("Klik untuk lihat produk yang belum terdaftar di Secrets"):
-                st.write(not_found['Product Name'].unique())
+            st.warning(f"⚠️ Ditemukan {len(not_found)} produk tanpa modal di Secrets!")
+            st.write("Cek baris merah di tabel bawah.")
 
         # --- METRIK UTAMA ---
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
-        cair = df_final[col_uang].sum()
-        modal = df_final['Total_Modal'].sum()
-        profit = df_final['Net_Profit'].sum()
+        total_net_rev = df_final['Net_Revenue'].sum()
+        total_modal = df_final['Total_Modal'].sum()
+        total_profit = df_final['Actual_Profit'].sum()
 
-        m1.metric("Uang Cair (Net)", f"Rp {cair:,.0f}")
-        m2.metric("Total Modal", f"Rp {modal:,.0f}")
-        m3.metric("Profit Bersih", f"Rp {profit:,.0f}")
-        m4.metric("Bagi Hasil (1/3)", f"Rp {profit/3:,.0f}")
+        m1.metric("Omset Bersih (Murni)", f"Rp {total_net_rev:,.0f}")
+        m2.metric("Total Modal", f"Rp {total_modal:,.0f}")
+        m3.metric("Profit Final", f"Rp {total_profit:,.0f}")
+        m4.metric("Bagi Hasil (1/3)", f"Rp {total_profit/3:,.0f}")
 
         # 7. Visualisasi
         c1, c2 = st.columns([2,1])
         with c1:
-            daily = df_final.groupby(df_final['Order settled time'].dt.date)[col_uang].sum().reset_index()
-            st.plotly_chart(px.line(daily, x='Order settled time', y=col_uang, title="Tren Pencairan", template="plotly_dark"), use_container_width=True)
+            daily = df_final.groupby(df_final['Order settled time'].dt.date)['Actual_Profit'].sum().reset_index()
+            st.plotly_chart(px.line(daily, x='Order settled time', y='Actual_Profit', title="Tren Untung Bersih Harian", template="plotly_dark"), use_container_width=True)
         with c2:
-            st.plotly_chart(px.pie(df_final, values=col_uang, names='Product Name', title="Kontribusi Produk", hole=0.4, template="plotly_dark"), use_container_width=True)
+            st.plotly_chart(px.pie(df_final, values='Actual_Profit', names='Product Name', title="Sumber Profit", hole=0.4, template="plotly_dark"), use_container_width=True)
 
         # 8. Tabel Detail
         df_final['Tgl'] = df_final['Order settled time'].dt.date
         summary = df_final.groupby(['Tgl', 'Product Name', 'Modal_Found']).agg({
             'Quantity': 'sum',
-            col_uang: 'sum',
+            'Net_Revenue': 'sum',
             'Total_Modal': 'sum',
-            'Net_Profit': 'sum'
+            'Actual_Profit': 'sum'
         }).reset_index().sort_values('Tgl', ascending=False)
 
-        st.subheader("📋 Rincian Transaksi & Status Modal")
-        # Beri warna pada baris yang modalnya tidak ditemukan
-        st.dataframe(summary.style.apply(lambda x: ['background-color: #721c24' if not x.Modal_Found else '' for i in x], axis=1), use_container_width=True)
-
-        # 9. AI ANALYST
-        st.divider()
-        u_in = st.text_input("Tanya AI (Contoh: Mengapa profit saya tidak sesuai hitungan manual?):")
-        if st.button("Tanya AI") and u_in:
-            genai.configure(api_key=API_KEY)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            # Kirim info audit ke AI
-            prompt = f"Data: {summary.head(30).to_string()}\nUser: {u_in}\nInfo: Ada {len(not_found)} produk tanpa modal."
-            res = model.generate_content(prompt)
-            st.info(res.text)
+        st.subheader("📋 Rincian Audit Keuangan")
+        st.dataframe(summary.style.apply(lambda x: ['background-color: #441111' if not x.Modal_Found else '' for i in x], axis=1), use_container_width=True)
 
     except Exception as e:
         st.error(f"Error: {e}")
 else:
-    st.info("Silakan unggah file Pesanan dan Settlement.")
+    st.info("Silakan unggah kedua file CSV di sidebar.")
