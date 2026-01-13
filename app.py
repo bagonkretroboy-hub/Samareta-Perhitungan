@@ -4,9 +4,9 @@ import google.generativeai as genai
 import plotly.express as px
 
 # --- CONFIG DASHBOARD ---
-st.set_page_config(page_title="Samareta Intelligence Pro", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Samareta Settlement Pro", layout="wide", page_icon="💰")
 
-# Custom CSS: Metrik Kecil & Rapi
+# Custom CSS: Metrik Rapi
 st.markdown("""
     <style>
     [data-testid="stMetricLabel"] { font-size: 13px !important; color: #666666 !important; }
@@ -15,41 +15,54 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📊 Samareta Business Intelligence")
+st.title("💰 Samareta Settlement Intelligence")
 
 # --- LOAD SECRETS ---
 try:
     DAFTAR_MODAL = st.secrets["MODAL_PRODUK"]
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except Exception:
-    st.error("Secrets bermasalah! Cek MODAL_PRODUK dan GEMINI_API_KEY.")
+    st.error("Secrets tidak ditemukan!")
     st.stop()
 
-# --- SIDEBAR ---
+# --- SIDEBAR: DOUBLE UPLOAD ---
 with st.sidebar:
-    st.header("⚙️ Kontrol Data")
-    uploaded_file = st.file_uploader("Upload CSV TikTok", type=["csv"])
-    if uploaded_file:
-        df_raw = pd.read_csv(uploaded_file)
-        df_raw = df_raw.applymap(lambda x: x.strip().replace('\t', '') if isinstance(x, str) else x)
-        df_raw.columns = [c.strip() for c in df_raw.columns]
-        df_raw['Created Time'] = pd.to_datetime(df_raw['Created Time'], dayfirst=True, errors='coerce')
+    st.header("⚙️ Unggah Data")
+    file_order = st.file_uploader("1. Upload CSV PESANAN (Ada Nama Produk)", type=["csv"])
+    file_settle = st.file_uploader("2. Upload CSV SETTLEMENT (Ada Uang Bersih)", type=["csv"])
+    
+    if file_order and file_settle:
+        # Load data
+        df_order = pd.read_csv(file_order)
+        df_settle = pd.read_csv(file_settle)
         
-        min_d, max_d = df_raw['Created Time'].min().date(), df_raw['Created Time'].max().date()
-        date_range = st.date_input("Rentang Waktu", [min_d, max_d])
-        sel_status = st.multiselect("Status", df_raw['Order Status'].unique().tolist(), default=["Selesai"])
+        # Bersihkan nama kolom
+        df_order.columns = [c.strip() for c in df_order.columns]
+        df_settle.columns = [c.strip() for c in df_settle.columns]
+
+        # Gabungkan data berdasarkan Order ID
+        # Pastikan kolom Order ID namanya sesuai (biasanya 'Order ID' di kedua file)
+        try:
+            df_raw = pd.merge(df_settle, df_order[['Order ID', 'Product Name', 'Quantity', 'Created Time']], on='Order ID', how='left')
+            df_raw['Created Time'] = pd.to_datetime(df_raw['Created Time'], dayfirst=True, errors='coerce')
+            
+            min_d, max_d = df_raw['Created Time'].min().date(), df_raw['Created Time'].max().date()
+            date_range = st.date_input("Rentang Waktu", [min_d, max_d])
+        except Exception as e:
+            st.error(f"Gagal menggabungkan file: {e}")
 
 # --- PROSES DATA ---
-if uploaded_file:
+if file_order and file_settle:
     try:
         df = df_raw.copy()
         if len(date_range) == 2:
             df = df[(df['Created Time'].dt.date >= date_range[0]) & (df['Created Time'].dt.date <= date_range[1])]
-        df = df[df['Order Status'].isin(sel_status)]
 
-        col_uang = 'SKU Subtotal After Discount'
+        # Kolom uang di file settlement biasanya 'Settlement Amount'
+        col_uang = 'Settlement Amount'
         df[col_uang] = pd.to_numeric(df[col_uang], errors='coerce').fillna(0)
 
+        # Hitung Modal
         def get_cogs(row):
             nm, qty = str(row['Product Name']).lower(), row['Quantity']
             sorted_k = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
@@ -64,70 +77,45 @@ if uploaded_file:
         # METRIK
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
-        omset, modal, profit = df[col_uang].sum(), df['Total_Modal'].sum(), df['Net_Profit'].sum()
-        m1.metric("Total Omset", f"Rp {omset:,.0f}")
-        m2.metric("Total Modal", f"Rp {modal:,.0f}")
-        m3.metric("Profit Bersih", f"Rp {profit:,.0f}")
-        m4.metric("Bagi Hasil (1/3)", f"Rp {profit/3:,.0f}")
+        omset_bersih = df[col_uang].sum() # Ini sudah potong admin TikTok
+        total_modal = df['Total_Modal'].sum()
+        profit_fix = df['Net_Profit'].sum()
+        
+        m1.metric("Uang Masuk (Bersih)", f"Rp {omset_bersih:,.0f}")
+        m2.metric("Total Modal", f"Rp {total_modal:,.0f}")
+        m3.metric("Profit Final", f"Rp {profit_fix:,.0f}")
+        m4.metric("Bagi Hasil (1/3)", f"Rp {profit_fix/3:,.0f}")
 
-        # --- DATA UNTUK ANALISIS DETAIL (TANGGAL + PRODUK) ---
-        # Membuat tabel gabungan Tanggal dan Produk untuk dibaca AI
-        df['Tanggal_Saja'] = df['Created Time'].dt.date
-        detail_analysis = df.groupby(['Tanggal_Saja', 'Product Name']).agg({
+        # TABEL ANALISIS UNTUK AI
+        df['Tanggal'] = df['Created Time'].dt.date
+        analysis_table = df.groupby(['Tanggal', 'Product Name']).agg({
             'Quantity': 'sum',
             col_uang: 'sum',
             'Net_Profit': 'sum'
         }).reset_index()
 
-        # VISUALISASI
-        daily_trend = df.groupby('Tanggal_Saja')[col_uang].sum().reset_index()
-        c1, c2 = st.columns([2,1])
-        with c1:
-            st.plotly_chart(px.line(daily_trend, x='Tanggal_Saja', y=col_uang, title="Tren Omset", template="plotly_white"), use_container_width=True)
-        with c2:
-            st.plotly_chart(px.pie(df, values=col_uang, names='Product Category', title="Kategori", hole=0.4), use_container_width=True)
+        st.subheader("📋 Ringkasan Profit per Produk")
+        st.dataframe(analysis_table.sort_values('Net_Profit', ascending=False), use_container_width=True)
 
-        # TABEL RINGKASAN PRODUK
-        summary = df.groupby('Product Name').agg({'Quantity':'sum', col_uang:'sum', 'Net_Profit':'sum'}).sort_values('Net_Profit', ascending=False)
-        st.subheader("📋 Performa Detail per Produk")
-        st.dataframe(summary, use_container_width=True)
-
-        # --- AI STRATEGIST (VERSI ULTRA-DETAIL) ---
+        # AI STRATEGIST
         st.divider()
-        st.subheader("🤖 AI Strategist (Deep Analysis)")
-        u_in = st.text_input("Tanya AI (Contoh: Kapan Produk A paling laku dan berapa untungnya?):")
+        st.subheader("🤖 AI Strategist (Settlement Mode)")
+        u_in = st.text_input("Tanya AI tentang detail keuangan:")
         
-        if st.button("Analisis AI Sekarang") and u_in:
-            try:
-                genai.configure(api_key=API_KEY)
-                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                selected_model = next((m for m in models if "1.5-flash" in m), models[0])
-                model = genai.GenerativeModel(selected_model)
-                
-                # Mengirimkan data detail gabungan Tanggal & Produk ke AI
-                # Kita batasi 50 baris teratas agar tidak kepanjangan (bisa disesuaikan)
-                detail_context = detail_analysis.sort_values(['Net_Profit'], ascending=False).head(50).to_string(index=False)
-                
-                prompt = f"""
-                Kamu adalah Analis Data Samareta. Gunakan data detail di bawah ini:
-
-                DATA DETAIL (Tanggal, Nama Produk, Qty, Omset, Profit):
-                {detail_context}
-
-                PERTANYAAN USER: "{u_in}"
-
-                TUGAS:
-                Jawab dengan menyebutkan tanggal spesifik, nama produk, jumlah (pcs), dan nominal profitnya sesuai data di atas.
-                Jika data tidak ditemukan dalam 50 baris teratas, beri tahu user berdasarkan tren umum.
-                """
-                
-                with st.spinner("AI sedang menghitung detail transaksi..."):
-                    res = model.generate_content(prompt)
-                    st.info(f"💡 **Hasil Analisis:**\n\n{res.text}")
-            except Exception as e:
-                st.error(f"Gagal memanggil AI: {e}")
+        if st.button("Analisis AI") and u_in:
+            genai.configure(api_key=API_KEY)
+            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            selected_model = next((m for m in models if "1.5-flash" in m), models[0])
+            model = genai.GenerativeModel(selected_model)
+            
+            context = analysis_table.head(60).to_string(index=False)
+            prompt = f"Data Settlement (Sudah potong admin):\n{context}\n\nUser: {u_in}\nJawab dengan detail berdasarkan data settlement."
+            
+            with st.spinner("AI sedang memproses data gabungan..."):
+                res = model.generate_content(prompt)
+                st.info(res.text)
 
     except Exception as e:
         st.error(f"Error: {e}")
 else:
-    st.info("Silakan unggah file CSV di sidebar.")
+    st.info("Silakan unggah kedua file (Pesanan & Settlement) di sidebar.")
