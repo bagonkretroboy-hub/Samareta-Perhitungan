@@ -3,6 +3,7 @@ import pandas as pd
 import google.generativeai as genai
 import re
 from datetime import datetime
+import plotly.express as px
 
 # --- 1. CONFIG DASHBOARD ---
 st.set_page_config(page_title="Samareta Intelligence Pro", layout="wide", page_icon="💰")
@@ -12,6 +13,7 @@ st.markdown("""
     <style>
     [data-testid="stMetric"] { background-color: #1a1a1a !important; border: 1px solid #333; padding: 15px; border-radius: 10px; }
     [data-testid="stMetricValue"] { color: #00ff00 !important; font-size: 24px !important; }
+    .stAlert { border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -23,14 +25,12 @@ except:
     st.error("Secrets Belum Terisi! Pastikan MODAL_PRODUK ada di Dashboard Streamlit.")
     st.stop()
 
-st.title("💰 Samareta Pro: Laporan Profit & Multiplier")
+st.title("💰 Samareta Pro: Dashboard & Anomaly Detection")
 
-# --- 3. FUNGSI PEMBERSIH (Anti-Karakter Hantu) ---
+# --- 3. FUNGSI PEMBERSIH ---
 def super_clean(text):
     if pd.isna(text): return ""
-    # Buang karakter tab (\t) dan newline (\n) yang sering ada di file TikTok
     text = str(text).replace('\t', ' ').replace('\n', ' ')
-    # Hanya sisakan huruf dan angka (buang simbol []-() dll)
     text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
     return ' '.join(text.split()).lower()
 
@@ -39,27 +39,22 @@ with st.sidebar:
     st.header("⚙️ Data Source")
     f_order = st.file_uploader("1. Upload CSV PESANAN", type=["csv"])
     f_settle = st.file_uploader("2. Upload CSV SETTLEMENT", type=["csv"])
-    
-    # Placeholder untuk filter tanggal yang akan muncul nanti
-    date_range = None
 
 # --- 5. LOGIKA UTAMA ---
 if f_order and f_settle:
     try:
-        # Load Raw Data
+        # Load Data
         df_o = pd.read_csv(f_order)
-        try:
-            df_s = pd.read_csv(f_settle, sep=';')
-        except:
-            df_s = pd.read_csv(f_settle)
+        try: df_s = pd.read_csv(f_settle, sep=';')
+        except: df_s = pd.read_csv(f_settle)
 
-        # A. BERSIHKAN SEMUA KOLOM & DATA (PENTING!)
+        # Pembersihan Karakter Tab & Spasi
         df_o.columns = [c.replace('\t', '').strip() for c in df_o.columns]
         df_s.columns = [c.replace('\t', '').strip() for c in df_s.columns]
         df_o = df_o.applymap(lambda x: str(x).replace('\t', '').strip() if pd.notnull(x) else x)
         df_s = df_s.applymap(lambda x: str(x).replace('\t', '').strip() if pd.notnull(x) else x)
 
-        # B. SYNC / MERGE
+        # Merge Data
         df_s = df_s[df_s['Type'] == 'Order'].drop_duplicates(subset=['Order/adjustment ID'])
         col_id_o = next(c for c in df_o.columns if 'Order ID' in c)
         col_time_o = next(c for c in df_o.columns if 'Created Time' in c or 'Order create time' in c)
@@ -67,81 +62,101 @@ if f_order and f_settle:
         df_final = pd.merge(df_s, df_o[[col_id_o, 'Product Name', 'Variation', 'Quantity', col_time_o]], 
                            left_on='Order/adjustment ID', right_on=col_id_o, how='inner')
 
-        # C. FIX TANGGAL
         df_final['Tanggal_Fix'] = pd.to_datetime(df_final[col_time_o], dayfirst=True, errors='coerce')
 
-        # --- 6. FILTER TANGGAL DI SIDEBAR (VERSI DESEMBER) ---
+        # Filter Tanggal Sidebar
         with st.sidebar:
             st.divider()
-            st.write("### 📅 Filter Laporan")
-            
-            # Jika ada tanggal yang terbaca, kita ambil default-nya
-            if not df_final['Tanggal_Fix'].dropna().empty:
-                start_def = df_final['Tanggal_Fix'].min().date()
-                end_def = df_final['Tanggal_Fix'].max().date()
-            else:
-                start_def, end_def = datetime(2025,1,1).date(), datetime(2025,12,31).date()
+            start_def = df_final['Tanggal_Fix'].min().date()
+            end_def = df_final['Tanggal_Fix'].max().date()
+            date_range = st.date_input("Periode Laporan:", value=(start_def, end_def),
+                                      min_value=datetime(2024,1,1).date(),
+                                      max_value=datetime(2026,12,31).date())
 
-            date_range = st.date_input(
-                "Pilih Periode:",
-                value=(start_def, end_def),
-                min_value=datetime(2024, 1, 1).date(),
-                max_value=datetime(2026, 12, 31).date() # Bisa pilih sampai akhir tahun depan
-            )
+        if len(date_range) == 2:
+            df_final = df_final[(df_final['Tanggal_Fix'].dt.date >= date_range[0]) & (df_final['Tanggal_Fix'].dt.date <= date_range[1])]
 
-        # Terapkan Filter Tanggal
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            df_final = df_final[
-                (df_final['Tanggal_Fix'].dt.date >= date_range[0]) & 
-                (df_final['Tanggal_Fix'].dt.date <= date_range[1])
-            ]
-
-        # --- 7. LOGIKA MATCHING & MULTIPLIER ---
+        # --- 6. LOGIKA MATCHING & MULTIPLIER ---
         def get_smart_modal(row):
             combined = super_clean(f"{row['Product Name']} {row['Variation']}")
             qty_order = int(float(row['Quantity']))
+            match_key, base_price = "TIDAK DITEMUKAN", 0
             
-            match_key = "TIDAK DITEMUKAN"
-            base_price = 0
-            
-            # Cari Base Product di Secrets
             sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
             for k in sorted_keys:
                 if super_clean(k) in combined:
-                    match_key = k
-                    base_price = DAFTAR_MODAL[k]
+                    match_key, base_price = k, DAFTAR_MODAL[k]
                     break
             
-            # Deteksi Angka Isi (Multiplier)
             multiplier = 1
-            find_isi = re.search(r'isi\s*(\d+)', combined)
-            if find_isi:
-                multiplier = int(find_isi.group(1))
+            if "paket" not in match_key.lower():
+                find_isi = re.search(r'isi\s*(\d+)', combined)
+                if find_isi: multiplier = int(find_isi.group(1))
             
             total_modal = base_price * multiplier * qty_order
-            tipe = f"Satuan x{qty_order}" if multiplier == 1 else f"Paket Isi {multiplier} (x{qty_order})"
-            
-            return pd.Series([match_key, base_price, total_modal, tipe])
+            return pd.Series([match_key, total_modal])
 
-        df_final[['Key_Secrets', 'Hrg_Base', 'Total_Modal', 'Tipe']] = df_final.apply(get_smart_modal, axis=1)
+        df_final[['Key_Found', 'Total_Modal']] = df_final.apply(get_smart_modal, axis=1)
 
-        # --- 8. HITUNG KEUANGAN ---
-        df_final['Settlement'] = pd.to_numeric(df_final['Total settlement amount'], errors='coerce').fillna(0)
+        # Perhitungan Keuangan
+        df_final['Settlement_Gross'] = pd.to_numeric(df_final['Total settlement amount'], errors='coerce').fillna(0)
         df_final['Ongkir_C'] = pd.to_numeric(df_final['Shipping cost paid by the customer'], errors='coerce').fillna(0)
-        df_final['Net_Rev'] = df_final['Settlement'] - df_final['Ongkir_C']
-        df_final['Profit'] = df_final['Net_Rev'] - df_final['Total_Modal']
+        df_final['Net_Revenue'] = df_final['Settlement_Gross'] - df_final['Ongkir_C']
+        df_final['Profit'] = df_final['Net_Revenue'] - df_final['Total_Modal']
 
-        # --- 9. DISPLAY ---
+        # --- 7. SISTEM PERINGATAN (WARNING & ANOMALY) ---
+        st.subheader("⚠️ Pusat Kontrol & Peringatan")
+        warn_col1, warn_col2 = st.columns(2)
+
+        with warn_col1:
+            # Peringatan Key Missing
+            unmatched = df_final[df_final['Key_Found'] == "TIDAK DITEMUKAN"]
+            if not unmatched.empty:
+                st.warning(f"**Produk Tidak Terdaftar ({len(unmatched)})**\n\nModal dianggap Rp 0.")
+                with st.expander("Lihat Produk"):
+                    st.table(unmatched[['Product Name', 'Variation']].drop_duplicates())
+            else:
+                st.success("✅ Semua produk cocok dengan Secrets.")
+
+        with warn_col2:
+            # Peringatan Anomali Profit (Minus atau 0)
+            anomali = df_final[(df_final['Profit'] <= 0) & (df_final['Key_Found'] != "TIDAK DITEMUKAN")]
+            if not anomali.empty:
+                st.error(f"**Deteksi Anomali Profit ({len(anomali)})**\n\nAda transaksi rugi atau profit Rp 0.")
+                with st.expander("Lihat Data Anomali"):
+                    st.dataframe(anomali[['Tanggal_Fix', 'Product Name', 'Settlement_Gross', 'Total_Modal', 'Profit']])
+            else:
+                st.success("✅ Tidak ada anomali profit (Semua untung).")
+
+        # --- 8. VISUALISASI GRAFIK ---
         st.divider()
-        st.subheader(f"📊 Laporan: {date_range[0]} s/d {date_range[1]}")
+        st.subheader("📈 Analisis Visual")
+        col_g1, col_g2 = st.columns([2, 1])
+
+        with col_g1:
+            daily_profit = df_final.groupby(df_final['Tanggal_Fix'].dt.date)['Profit'].sum().reset_index()
+            fig_area = px.area(daily_profit, x='Tanggal_Fix', y='Profit', title="Tren Keuntungan Bersih",
+                              color_discrete_sequence=['#00ff00'])
+            st.plotly_chart(fig_area, use_container_width=True)
+
+        with col_g2:
+            top_products = df_final.groupby('Product Name')['Quantity'].sum().nlargest(5).reset_index()
+            fig_bar = px.bar(top_products, x='Quantity', y='Product Name', orientation='h', 
+                            title="Top 5 Best Seller", color='Quantity', color_continuous_scale='Greens')
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        # --- 9. METRIK UTAMA ---
+        st.divider()
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Omset Net", f"Rp {df_final['Net_Rev'].sum():,.0f}")
-        m2.metric("Total Modal", f"Rp {df_final['Total_Modal'].sum():,.0f}")
-        m3.metric("Profit Final", f"Rp {df_final['Profit'].sum():,.0f}")
+        m1.metric("Total Settlement", f"Rp {df_final['Settlement_Gross'].sum():,.0f}")
+        m2.metric("Total Modal (HPP)", f"Rp {df_final['Total_Modal'].sum():,.0f}")
+        m3.metric("Profit Bersih", f"Rp {df_final['Profit'].sum():,.0f}")
         m4.metric("Bagi Hasil (1/3)", f"Rp {df_final['Profit'].sum()/3:,.0f}")
 
-        # Tabel Audit
-        st.dataframe(df_final[['Tanggal_Fix', 'Product Name', 'Variation', 'Key_Secrets', 'Tipe', 'Total_Modal', 'Profit']], use_container_width=True)
+        # --- 10. TABEL RINCIAN ---
+        st.subheader("📋 Rincian Transaksi Lengkap")
+        st.dataframe(df_final[['Tanggal_Fix', 'Product Name', 'Variation', 'Settlement_Gross', 'Total_Modal', 'Profit', 'Key_Found']], 
+                     use_container_width=True)
 
     except Exception as e:
-        st.error(f"Sistem Gagal Memproses: {e}")
+        st.error(f"Terjadi kesalahan: {e}")
