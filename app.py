@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import google.generativeai as genai
 import re
 from datetime import datetime
 import plotly.express as px
@@ -25,7 +24,7 @@ except:
     st.error("Secrets Belum Terisi! Pastikan MODAL_PRODUK ada di Dashboard Streamlit.")
     st.stop()
 
-st.title("💰 Samareta Pro: Dashboard Profit & Audit")
+st.title("💰 Samareta Pro: Audit Profit & Tipe Produk")
 
 # --- 3. FUNGSI PEMBERSIH ---
 def super_clean(text):
@@ -43,12 +42,12 @@ with st.sidebar:
 # --- 5. LOGIKA UTAMA ---
 if f_order and f_settle:
     try:
-        # Load & Cleaning
+        # Load & Initial Cleaning
         df_o = pd.read_csv(f_order)
         try: df_s = pd.read_csv(f_settle, sep=';')
         except: df_s = pd.read_csv(f_settle)
 
-        # Pembersihan Karakter Tab & Spasi Kolom
+        # Pembersihan Karakter Hantu
         df_o.columns = [c.replace('\t', '').strip() for c in df_o.columns]
         df_s.columns = [c.replace('\t', '').strip() for c in df_s.columns]
         df_o = df_o.applymap(lambda x: str(x).replace('\t', '').strip() if pd.notnull(x) else x)
@@ -62,10 +61,8 @@ if f_order and f_settle:
         df_final = pd.merge(df_s, df_o[[col_id_o, 'Product Name', 'Variation', 'Quantity', col_time_o]], 
                            left_on='Order/adjustment ID', right_on=col_id_o, how='inner')
 
-        # Konversi Tanggal
+        # Konversi Data
         df_final['Tanggal_Fix'] = pd.to_datetime(df_final[col_time_o], dayfirst=True, errors='coerce')
-
-        # --- FIX: Konversi Quantity ke Angka ---
         df_final['Quantity'] = pd.to_numeric(df_final['Quantity'], errors='coerce').fillna(0)
 
         # Filter Tanggal Sidebar
@@ -80,10 +77,10 @@ if f_order and f_settle:
         if len(date_range) == 2:
             df_final = df_final[(df_final['Tanggal_Fix'].dt.date >= date_range[0]) & (df_final['Tanggal_Fix'].dt.date <= date_range[1])]
 
-        # --- 6. LOGIKA MATCHING & MULTIPLIER ---
+        # --- 6. LOGIKA MATCHING & MULTIPLIER (ISI 2,3,4,5) ---
         def get_smart_modal(row):
             combined = super_clean(f"{row['Product Name']} {row['Variation']}")
-            qty_order = row['Quantity'] # Sudah numerik
+            qty_order = row['Quantity']
             match_key, base_price = "TIDAK DITEMUKAN", 0
             
             sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
@@ -98,9 +95,11 @@ if f_order and f_settle:
                 if find_isi: multiplier = int(find_isi.group(1))
             
             total_modal = base_price * multiplier * qty_order
-            return pd.Series([match_key, total_modal])
+            tipe = f"Satuan (x{int(qty_order)})" if multiplier == 1 else f"Paket Isi {multiplier} (x{int(qty_order)})"
+            
+            return pd.Series([match_key, total_modal, tipe])
 
-        df_final[['Key_Found', 'Total_Modal']] = df_final.apply(get_smart_modal, axis=1)
+        df_final[['Key_Found', 'Total_Modal', 'Tipe']] = df_final.apply(get_smart_modal, axis=1)
 
         # Keuangan
         df_final['Settlement_Gross'] = pd.to_numeric(df_final['Total settlement amount'], errors='coerce').fillna(0)
@@ -108,7 +107,7 @@ if f_order and f_settle:
         df_final['Net_Revenue'] = df_final['Settlement_Gross'] - df_final['Ongkir_C']
         df_final['Profit'] = df_final['Net_Revenue'] - df_final['Total_Modal']
 
-        # --- 7. SISTEM PERINGATAN ---
+        # --- 7. SISTEM PERINGATAN (Saran Key & Anomali + Order ID) ---
         st.subheader("⚠️ Pusat Kontrol & Peringatan")
         warn_col1, warn_col2 = st.columns(2)
 
@@ -116,7 +115,7 @@ if f_order and f_settle:
             unmatched = df_final[df_final['Key_Found'] == "TIDAK DITEMUKAN"]
             if not unmatched.empty:
                 st.warning(f"**Produk Tidak Terdaftar ({len(unmatched)})**")
-                st.table(unmatched[['Product Name', 'Variation']].drop_duplicates())
+                st.table(unmatched[['Order/adjustment ID', 'Product Name', 'Variation']].drop_duplicates())
             else:
                 st.success("✅ Semua produk cocok.")
 
@@ -124,8 +123,8 @@ if f_order and f_settle:
             anomali = df_final[(df_final['Profit'] <= 0) & (df_final['Key_Found'] != "TIDAK DITEMUKAN")]
             if not anomali.empty:
                 st.error(f"**Deteksi Anomali Profit ({len(anomali)})**")
-                with st.expander("Lihat Data Rugi"):
-                    st.dataframe(anomali[['Tanggal_Fix', 'Product Name', 'Settlement_Gross', 'Profit']])
+                # Ditambah kolom Order ID untuk memudahkan pengecekan
+                st.dataframe(anomali[['Order/adjustment ID', 'Product Name', 'Settlement_Gross', 'Total_Modal', 'Profit']])
             else:
                 st.success("✅ Semua untung.")
 
@@ -138,7 +137,6 @@ if f_order and f_settle:
             fig_area = px.area(daily_profit, x='Tanggal_Fix', y='Profit', title="Tren Keuntungan", color_discrete_sequence=['#00ff00'])
             st.plotly_chart(fig_area, use_container_width=True)
         with col_g2:
-            # FIX: Groupby and nlargest sekarang aman karena Quantity sudah numerik
             top_products = df_final.groupby('Product Name')['Quantity'].sum().nlargest(5).reset_index()
             fig_bar = px.bar(top_products, x='Quantity', y='Product Name', orientation='h', title="Top 5 Best Seller (Pcs)", color='Quantity', color_continuous_scale='Greens')
             st.plotly_chart(fig_bar, use_container_width=True)
@@ -153,7 +151,8 @@ if f_order and f_settle:
 
         # --- 10. TABEL UTAMA ---
         st.subheader("📋 Rincian Transaksi Lengkap")
-        st.dataframe(df_final[['Tanggal_Fix', 'Product Name', 'Variation', 'Settlement_Gross', 'Total_Modal', 'Profit', 'Key_Found']], use_container_width=True)
+        # Ditambah kolom 'Tipe' (Satuan/Paket)
+        st.dataframe(df_final[['Tanggal_Fix', 'Order/adjustment ID', 'Product Name', 'Variation', 'Tipe', 'Settlement_Gross', 'Total_Modal', 'Profit']], use_container_width=True)
 
     except Exception as e:
         st.error(f"Terjadi kesalahan: {e}")
