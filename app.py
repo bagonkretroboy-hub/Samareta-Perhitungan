@@ -23,7 +23,7 @@ except:
     st.error("Secrets Belum Terisi! Pastikan MODAL_PRODUK ada di Dashboard Streamlit.")
     st.stop()
 
-st.title("💰 Samareta Pro: Fix Deteksi Paket")
+st.title("💰 Samareta Pro: Fix Multiplier Logic")
 
 # --- 3. FUNGSI PEMBERSIH ---
 def super_clean(text):
@@ -45,13 +45,13 @@ if f_order and f_settle:
         try: df_s = pd.read_csv(f_settle, sep=';')
         except: df_s = pd.read_csv(f_settle)
 
-        # Cleaning Kolom
+        # Cleaning
         df_o.columns = [c.replace('\t', '').strip() for c in df_o.columns]
         df_s.columns = [c.replace('\t', '').strip() for c in df_s.columns]
         df_o = df_o.applymap(lambda x: str(x).replace('\t', '').strip() if pd.notnull(x) else x)
         df_s = df_s.applymap(lambda x: str(x).replace('\t', '').strip() if pd.notnull(x) else x)
 
-        # Sync Data
+        # Merge
         df_s = df_s[df_s['Type'] == 'Order'].drop_duplicates(subset=['Order/adjustment ID'])
         col_id_o = next(c for c in df_o.columns if 'Order ID' in c)
         col_time_o = next(c for c in df_o.columns if 'Created Time' in c or 'Order create time' in c)
@@ -62,37 +62,46 @@ if f_order and f_settle:
         df_final['Tanggal_Fix'] = pd.to_datetime(df_final[col_time_o], dayfirst=True, errors='coerce')
         df_final['Quantity'] = pd.to_numeric(df_final['Quantity'], errors='coerce').fillna(0)
 
-        # Filter Tanggal Sidebar
+        # Filter Tanggal
         with st.sidebar:
             st.divider()
             start_def = df_final['Tanggal_Fix'].min().date()
             end_def = df_final['Tanggal_Fix'].max().date()
-            date_range = st.date_input("Periode Laporan:", value=(start_def, end_def),
+            date_range = st.date_input("Periode:", value=(start_def, end_def),
                                       min_value=datetime(2024,1,1).date(),
                                       max_value=datetime(2026,12,31).date())
 
         if len(date_range) == 2:
             df_final = df_final[(df_final['Tanggal_Fix'].dt.date >= date_range[0]) & (df_final['Tanggal_Fix'].dt.date <= date_range[1])]
 
-        # --- 6. LOGIKA SMART MATCHING (FIX ISI 4+) ---
+        # --- 6. LOGIKA SMART MATCHING (SENSITIF VARIASI) ---
         def get_smart_modal(row):
-            combined = super_clean(f"{row['Product Name']} {row['Variation']}")
+            p_name = super_clean(row['Product Name'])
+            p_var = super_clean(row['Variation'])
+            combined = f"{p_name} {p_var}"
             qty_order = row['Quantity']
-            match_key, base_price = "TIDAK DITEMUKAN", 0
             
-            # Cari Produk di Secrets
+            match_key, base_price = "TIDAK DITEMUKAN", 0
             sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
             for k in sorted_keys:
                 if super_clean(k) in combined:
                     match_key, base_price = k, DAFTAR_MODAL[k]
                     break
             
-            # DETEKSI MULTIPLIER DINAMIS (Isi 2, 3, 4, 5, 6, dst)
+            # LOGIKA MULTIPLIER BARU:
+            # 1. Cek angka di variasi dulu, baru di judul
             multiplier = 1
-            # Cari angka yang muncul tepat setelah kata 'isi'
-            find_isi = re.search(r'isi\s*(\d+)', combined)
-            if find_isi:
-                multiplier = int(find_isi.group(1))
+            # Cari angka di variasi
+            find_isi_var = re.findall(r'isi\s*(\d+)', p_var)
+            find_isi_name = re.findall(r'isi\s*(\d+)', p_name)
+            
+            if find_isi_var:
+                # Ambil angka pertama yang ditemukan di VARIASI
+                multiplier = int(find_isi_var[0])
+            elif find_isi_name:
+                # Jika di variasi tidak ada, ambil angka TERAKHIR di judul 
+                # (untuk menangani "Paket isi 2-3-4" agar ambil yang 4)
+                multiplier = int(find_isi_name[-1])
             
             total_modal = base_price * multiplier * qty_order
             tipe = f"Satuan (x{int(qty_order)})" if multiplier == 1 else f"Paket Isi {multiplier} (x{int(qty_order)})"
@@ -109,13 +118,13 @@ if f_order and f_settle:
 
         # --- 7. WARNINGS ---
         st.subheader("⚠️ Pusat Kontrol & Peringatan")
-        warn_col1, warn_col2 = st.columns(2)
-        with warn_col1:
+        w1, w2 = st.columns(2)
+        with w1:
             unmatched = df_final[df_final['Key_Found'] == "TIDAK DITEMUKAN"]
             if not unmatched.empty:
                 st.warning(f"**Produk Tidak Terdaftar ({len(unmatched)})**")
                 st.table(unmatched[['Order/adjustment ID', 'Product Name', 'Variation']].drop_duplicates())
-        with warn_col2:
+        with w2:
             anomali = df_final[(df_final['Profit'] <= 0) & (df_final['Key_Found'] != "TIDAK DITEMUKAN")]
             if not anomali.empty:
                 st.error(f"**Deteksi Anomali Profit ({len(anomali)})**")
