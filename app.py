@@ -3,161 +3,121 @@ import pandas as pd
 import google.generativeai as genai
 import plotly.express as px
 
-# --- CONFIG DASHBOARD ---
-st.set_page_config(page_title="Samareta Analytics", layout="wide", page_icon="💰")
+# --- CONFIG ---
+st.set_page_config(page_title="Samareta Modal Audit", layout="wide")
 
-# --- CUSTOM CSS (DARK MODE OPTIMIZED) ---
+# --- CUSTOM CSS ---
 st.markdown("""
     <style>
-    [data-testid="stMetric"] {
-        background-color: #1e1e1e !important; 
-        border: 1px solid #444444 !important;
-        padding: 15px !important;
-        border-radius: 10px !important;
-    }
-    [data-testid="stMetricLabel"] { color: #bbbbbb !important; font-size: 14px !important; }
-    [data-testid="stMetricValue"] { color: #00ff00 !important; font-size: 22px !important; font-weight: bold !important; }
-    .stDataFrame { border: 1px solid #444; border-radius: 5px; }
-    /* Style untuk sub-info quantity di metrik */
-    .metric-sub { color: #888; font-size: 12px; margin-top: -10px; }
+    [data-testid="stMetric"] { background-color: #1e1e1e !important; border: 1px solid #444; padding: 15px; border-radius: 10px; }
+    [data-testid="stMetricValue"] { color: #00ff00 !important; font-size: 24px !important; }
+    .stDataFrame { border: 1px solid #444; }
+    .highlight { background-color: #441111; padding: 5px; border-radius: 3px; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("💰 Samareta Analytics (Order Created Time)")
+st.title("💰 Samareta: Koreksi & Audit Modal")
 
 # --- LOAD SECRETS ---
 try:
     DAFTAR_MODAL = st.secrets["MODAL_PRODUK"]
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except:
-    st.error("Konfigurasi Secrets tidak ditemukan!")
+    st.error("⚠️ Secrets belum terisi! Silakan isi MODAL_PRODUK di Settings Streamlit.")
     st.stop()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Unggah Data")
-    file_order = st.file_uploader("1. Upload CSV PESANAN", type=["csv"])
-    file_settle = st.file_uploader("2. Upload CSV SETTLEMENT (Income)", type=["csv"])
+    st.header("⚙️ Data Source")
+    f_order = st.file_uploader("1. CSV PESANAN", type=["csv"])
+    f_settle = st.file_uploader("2. CSV SETTLEMENT", type=["csv"])
     st.divider()
-    st.info("Patokan Waktu: Tanggal Pesanan Dibuat")
+    st.write("### 📝 Daftar Modal di Secrets Anda:")
+    st.json(dict(DAFTAR_MODAL)) # Menampilkan isi secrets agar mudah dicocokkan
 
-# --- PROSES DATA ---
-if file_order and file_settle:
+if f_order and f_settle:
     try:
-        # 1. Load Data
-        df_order = pd.read_csv(file_order)
-        df_settle = pd.read_csv(file_settle, sep=';')
+        # 1. Load & Clean
+        df_o = pd.read_csv(f_order)
+        df_s = pd.read_csv(f_settle, sep=';')
+        df_o.columns = [c.strip() for c in df_o.columns]
+        df_s.columns = [c.replace('  ', ' ').strip() for c in df_s.columns]
+
+        # 2. Filter & Merge
+        df_s = df_s[df_s['Type'] == 'Order'].drop_duplicates(subset=['Order/adjustment ID'])
+        col_id_o = next(c for c in df_o.columns if 'Order ID' in c)
+        col_time_o = next(c for c in df_o.columns if 'Order create time' in c or 'Created Time' in c)
         
-        df_order.columns = [c.strip() for c in df_order.columns]
-        df_settle.columns = [c.replace('  ', ' ').strip() for c in df_settle.columns]
+        df_o_clean = df_o[[col_id_o, 'Product Name', 'Quantity', col_time_o]].drop_duplicates(subset=[col_id_o])
+        df_merged = pd.merge(df_s, df_o_clean, left_on='Order/adjustment ID', right_on=col_id_o, how='inner')
 
-        # 2. Filter Settlement
-        if 'Type' in df_settle.columns:
-            df_settle = df_settle[df_settle['Type'] == 'Order']
+        # 3. Konversi Uang & Waktu
+        df_merged['Settlement'] = pd.to_numeric(df_merged['Total settlement amount'], errors='coerce').fillna(0)
+        df_merged['Ongkir_Cust'] = pd.to_numeric(df_merged['Shipping cost paid by the customer'], errors='coerce').fillna(0)
+        df_merged['Time'] = pd.to_datetime(df_merged[col_time_o])
         
-        col_id_settle = 'Order/adjustment ID'
-        df_settle = df_settle.drop_duplicates(subset=[col_id_settle])
+        # Uang murni barang (Settlement - Ongkir Numpang Lewat)
+        df_merged['Net_Revenue'] = df_merged['Settlement'] - df_merged['Ongkir_Cust']
 
-        # 3. Identifikasi Kolom di File Pesanan
-        col_id_order = next((c for c in df_order.columns if 'Order ID' in c), None)
-        col_created_time = next((c for c in df_order.columns if 'Order create time' in c or 'Created Time' in c or 'Order creation time' in c), None)
-
-        if not col_id_order or not col_created_time:
-            st.error("Kolom ID atau Waktu tidak ditemukan di file Pesanan.")
-            st.stop()
-
-        # 4. Sinkronisasi & Merge
-        df_settle[col_id_settle] = df_settle[col_id_settle].astype(str).str.strip()
-        df_order[col_id_order] = df_order[col_id_order].astype(str).str.strip()
-        
-        df_order_clean = df_order[[col_id_order, 'Product Name', 'Quantity', col_created_time]].drop_duplicates(subset=[col_id_order])
-        df_final = pd.merge(df_settle, df_order_clean, left_on=col_id_settle, right_on=col_id_order, how='inner')
-
-        # 5. Konversi Uang & Waktu
-        col_settle = 'Total settlement amount'
-        col_ongkir_cust = 'Shipping cost paid by the customer'
-        
-        df_final[col_settle] = pd.to_numeric(df_final[col_settle], errors='coerce').fillna(0)
-        df_final[col_ongkir_cust] = pd.to_numeric(df_final[col_ongkir_cust], errors='coerce').fillna(0)
-        df_final[col_created_time] = pd.to_datetime(df_final[col_created_time], errors='coerce')
-
-        # Rumus Omset Bersih (Net)
-        df_final['Omset_Barang_Net'] = df_final[col_settle] - df_final[col_ongkir_cust]
-
-        # 6. FILTER TANGGAL (CREATED TIME)
-        min_d = df_final[col_created_time].min().date()
-        max_d = df_final[col_created_time].max().date()
-        date_range = st.sidebar.date_input("Rentang Tanggal Pesanan", [min_d, max_d])
-        
-        if len(date_range) == 2:
-            df_final = df_final[(df_final[col_created_time].dt.date >= date_range[0]) & (df_final[col_created_time].dt.date <= date_range[1])]
-
-        # 7. HITUNG MODAL & AUDIT
-        def get_cogs_audit(row):
-            nm, qty = str(row['Product Name']).lower(), row['Quantity']
+        # 4. LOGIKA AUDIT MODAL (Sangat Transparan)
+        def audit_modal_logic(row):
+            product_name = str(row['Product Name']).lower()
+            qty = row['Quantity']
+            match_key = "TIDAK DITEMUKAN"
+            price_per_unit = 0
+            
+            # Urutkan kunci secrets dari yang terpanjang agar pencocokan lebih akurat
             sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
-            for k in sorted_keys:
-                if k.lower() in nm:
-                    val = DAFTAR_MODAL[k] if "paket" in k.lower() else DAFTAR_MODAL[k] * qty
-                    return val, True
-            return 0, False
+            
+            for key in sorted_keys:
+                if key.lower() in product_name:
+                    match_key = key
+                    price_per_unit = DAFTAR_MODAL[key]
+                    break
+            
+            # Jika ada kata 'paket', modal biasanya tidak dikali qty (sudah harga paket)
+            is_paket = "paket" in match_key.lower() or "isi" in match_key.lower()
+            total_modal = price_per_unit if is_paket else price_per_unit * qty
+            
+            return pd.Series([match_key, price_per_unit, total_modal])
 
-        audit_res = df_final.apply(get_cogs_audit, axis=1)
-        df_final['Total_Modal'] = [x[0] for x in audit_res]
-        df_final['Modal_Found'] = [x[1] for x in audit_res]
-        df_final['Actual_Profit'] = df_final['Omset_Barang_Net'] - df_final['Total_Modal']
+        df_merged[['Key_Ditemukan', 'Harga_Satuan', 'Total_Modal']] = df_merged.apply(audit_modal_logic, axis=1)
+        df_merged['Profit'] = df_merged['Net_Revenue'] - df_merged['Total_Modal']
 
-        # --- TAMPILAN METRIK (DENGAN INFO QUANTITY) ---
+        # 5. Filter Tanggal
+        dr = st.sidebar.date_input("Filter Tanggal Pesanan", [df_merged['Time'].min().date(), df_merged['Time'].max().date()])
+        if len(dr) == 2:
+            df_merged = df_merged[(df_merged['Time'].dt.date >= dr[0]) & (df_merged['Time'].dt.date <= dr[1])]
+
+        # --- TAMPILAN METRIK ---
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
+        total_p = df_merged['Profit'].sum()
+        m1.metric("Omset Net Barang", f"Rp {df_merged['Net_Revenue'].sum():,.0f}")
+        m2.metric("Total Modal", f"Rp {df_merged['Total_Modal'].sum():,.0f}")
+        m3.metric("Profit Bersih", f"Rp {total_p:,.0f}")
+        m4.metric("Bagi Hasil (1/3)", f"Rp {total_p/3:,.0f}")
+
+        # --- BAGIAN AUDIT (KOREKSI DI SINI) ---
+        st.subheader("🔍 Tabel Koreksi: Apakah Modal Sudah Benar?")
+        st.info("Cek kolom 'Key_Ditemukan'. Jika isinya 'TIDAK DITEMUKAN', berarti nama produk di Secrets tidak cocok dengan nama di TikTok.")
         
-        total_qty = df_final['Quantity'].sum()
-        total_omset = df_final['Omset_Barang_Net'].sum()
-        total_modal = df_final['Total_Modal'].sum()
-        total_profit = df_final['Actual_Profit'].sum()
-
-        # Tampilan Metrik dengan tambahan info Quantity
-        m1.metric("Omset Bersih (Net)", f"Rp {total_omset:,.0f}")
-        m1.markdown(f"<p class='metric-sub'>📦 Total: {total_qty:,.0f} pcs</p>", unsafe_allow_html=True)
+        audit_df = df_merged[['Time', 'Product Name', 'Quantity', 'Key_Ditemukan', 'Harga_Satuan', 'Total_Modal', 'Net_Revenue', 'Profit']]
         
-        m2.metric("Total Modal", f"Rp {total_modal:,.0f}")
-        m2.markdown(f"<p class='metric-sub'>💵 Modal dari {total_qty:,.0f} pcs</p>", unsafe_allow_html=True)
+        # Beri warna merah pada baris yang modalnya 0
+        def highlight_missing(s):
+            return ['background-color: #441111' if s.Key_Ditemukan == "TIDAK DITEMUKAN" else '' for _ in s]
         
-        m3.metric("Profit Bersih", f"Rp {total_profit:,.0f}")
-        m4.metric("Bagi Hasil (1/3)", f"Rp {total_profit/3:,.0f}")
+        st.dataframe(audit_df.style.apply(highlight_missing, axis=1), use_container_width=True)
 
-        # 8. Visualisasi
-        c1, c2 = st.columns([2,1])
-        with c1:
-            daily = df_final.groupby(df_final[col_created_time].dt.date)['Actual_Profit'].sum().reset_index()
-            st.plotly_chart(px.line(daily, x=col_created_time, y='Actual_Profit', title="Tren Profit (Waktu Order Created)", template="plotly_dark"), use_container_width=True)
-        with c2:
-            st.plotly_chart(px.pie(df_final, values='Quantity', names='Product Name', title="Volume Penjualan (Pcs)", hole=0.4, template="plotly_dark"), use_container_width=True)
-
-        # 9. Tabel Detail
-        df_final['Tgl_Dibuat'] = df_final[col_created_time].dt.date
-        summary = df_final.groupby(['Tgl_Dibuat', 'Product Name', 'Modal_Found']).agg({
-            'Quantity': 'sum',
-            'Omset_Barang_Net': 'sum',
-            'Total_Modal': 'sum',
-            'Actual_Profit': 'sum'
-        }).reset_index().sort_values('Tgl_Dibuat', ascending=False)
-
-        st.subheader("📋 Rincian Transaksi")
-        st.dataframe(summary.style.apply(lambda x: ['background-color: #441111' if not x.Modal_Found else '' for i in x], axis=1), use_container_width=True)
-
-        # 10. AI ANALYST
+        # AI Analyst
         st.divider()
-        u_in = st.text_input("Tanya AI tentang data ini:")
+        u_in = st.text_input("Tanya AI (Contoh: Mengapa produk A profitnya kecil?)")
         if st.button("Analisis AI") and u_in:
             genai.configure(api_key=API_KEY)
             model = genai.GenerativeModel('gemini-1.5-flash')
-            context = summary.head(40).to_string(index=False)
-            prompt = f"Data Penjualan:\n{context}\n\nUser: {u_in}"
-            res = model.generate_content(prompt)
+            res = model.generate_content(f"Data: {audit_df.head(30).to_string()}\n\nUser: {u_in}")
             st.info(res.text)
 
     except Exception as e:
         st.error(f"Error: {e}")
-else:
-    st.info("Upload file CSV untuk melihat data.")
