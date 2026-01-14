@@ -4,33 +4,51 @@ import google.generativeai as genai
 import re
 
 # --- CONFIG ---
-st.set_page_config(page_title="Samareta Intelligence", layout="wide")
+st.set_page_config(page_title="Samareta Pro: Fix Modal", layout="wide", page_icon="💰")
+
+# Styling Kontras Tinggi
+st.markdown("""
+    <style>
+    [data-testid="stMetric"] { background-color: #1a1a1a !important; border: 1px solid #333; padding: 15px; border-radius: 10px; }
+    [data-testid="stMetricValue"] { color: #00ff00 !important; font-size: 24px !important; }
+    .stDataFrame { border: 1px solid #444; }
+    .err-box { background-color: #441111; color: white; padding: 10px; border-radius: 5px; margin-bottom: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+st.title("💰 Samareta Pro: Fix Modal Error")
 
 # --- LOAD SECRETS ---
 try:
     DAFTAR_MODAL = st.secrets["MODAL_PRODUK"]
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except:
-    st.error("Konfigurasi Secrets Error!")
+    st.error("Gagal memuat Secrets! Pastikan MODAL_PRODUK sudah diisi di Dashboard Streamlit Cloud.")
     st.stop()
-
-st.title("💰 Samareta Pro: Fix Modal Error")
 
 # --- SIDEBAR ---
 with st.sidebar:
-    f_order = st.file_uploader("Upload CSV PESANAN", type=["csv"])
-    f_settle = st.file_uploader("Upload CSV SETTLEMENT", type=["csv"])
+    st.header("⚙️ Data Source")
+    f_order = st.file_uploader("1. Upload SEMUA PESANAN", type=["csv"])
+    f_settle = st.file_uploader("2. Upload SETTLEMENT", type=["csv"])
+    st.divider()
+    st.write("### 📝 Logika Perhitungan")
+    st.info("Sistem akan mencari kata kunci di Judul Produk + Variasi secara otomatis.")
 
+# --- LOGIKA CORE ---
 if f_order and f_settle:
     try:
+        # Load & Clean Kolom
         df_o = pd.read_csv(f_order)
-        df_s = pd.read_csv(f_settle, sep=';')
-        
-        # Cleaning Kolom
+        try:
+            df_s = pd.read_csv(f_settle, sep=';')
+        except:
+            df_s = pd.read_csv(f_settle) # Fallback jika sep adalah koma
+
         df_o.columns = [c.strip() for c in df_o.columns]
         df_s.columns = [c.replace('  ', ' ').strip() for c in df_s.columns]
 
-        # Merge Data
+        # Sync Data
         df_s = df_s[df_s['Type'] == 'Order'].drop_duplicates(subset=['Order/adjustment ID'])
         col_id_o = next(c for c in df_o.columns if 'Order ID' in c)
         col_time_o = next(c for c in df_o.columns if 'Order create time' in c or 'Created Time' in c)
@@ -38,38 +56,43 @@ if f_order and f_settle:
         df_o_clean = df_o[[col_id_o, 'Product Name', 'Variation', 'Quantity', col_time_o]].drop_duplicates(subset=[col_id_o])
         df_final = pd.merge(df_s, df_o_clean, left_on='Order/adjustment ID', right_on=col_id_o, how='inner')
 
-        # Logika Pencarian Modal
-        def find_modal(row):
-            # Gabungkan Nama Produk & Variasi, lalu bersihkan dari karakter aneh
-            raw_text = f"{row['Product Name']} {row['Variation']}".lower()
-            clean_text = re.sub(r'[^a-zA-Z0-0\s]', ' ', raw_text) # Buang simbol [] () - 
-            
+        # --- LOGIKA PENCARIAN MODAL (FUZZY MATCHING) ---
+        def normalize_text(text):
+            # Buang karakter aneh agar pencocokan gampang
+            return re.sub(r'[^a-zA-Z0-9\s]', ' ', str(text).lower())
+
+        def find_modal_smart(row):
+            combined_text = normalize_text(f"{row['Product Name']} {row['Variation']}")
+            qty = row['Quantity']
             match_key = "TIDAK DITEMUKAN"
             price = 0
             
-            # Sort keys by length (Longest first)
+            # Cari dari kunci terpanjang (paling spesifik) ke yang pendek
             sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
             for k in sorted_keys:
-                if k.lower() in clean_text:
+                clean_key = normalize_text(k)
+                if clean_key in combined_text:
                     match_key = k
                     price = DAFTAR_MODAL[k]
                     break
             
-            is_paket = any(x in clean_text or x in match_key.lower() for x in ["paket", "isi", "bundle"])
-            total_m = price if is_paket else price * row['Quantity']
-            tipe = "📦 Paket" if is_paket else f"🛍️ Satuan (x{row['Quantity']})"
+            # Deteksi apakah ini paket
+            is_paket = any(x in combined_text or x in normalize_text(match_key) for x in ["paket", "isi", "bundle"])
+            total_m = price if is_paket else price * qty
+            tipe = "📦 Paket" if is_paket else f"🛍️ Satuan (x{qty})"
             
             return pd.Series([match_key, price, total_m, tipe])
 
-        df_final[['Key', 'Hrg_Satuan', 'Total_Modal', 'Tipe']] = df_final.apply(find_modal, axis=1)
-        
-        # Hitung Uang Net
+        df_final[['Key_Secrets', 'Hrg_Satuan', 'Total_Modal', 'Tipe']] = df_final.apply(find_modal_smart, axis=1)
+
+        # Hitung Keuangan
         df_final['Settlement'] = pd.to_numeric(df_final['Total settlement amount'], errors='coerce').fillna(0)
         df_final['Ongkir_C'] = pd.to_numeric(df_final['Shipping cost paid by the customer'], errors='coerce').fillna(0)
         df_final['Net_Rev'] = df_final['Settlement'] - df_final['Ongkir_C']
         df_final['Profit'] = df_final['Net_Rev'] - df_final['Total_Modal']
+        df_final['Time'] = pd.to_datetime(df_final[col_time_o])
 
-        # Tampilan Metrik
+        # --- TAMPILAN METRIK ---
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Omset Bersih", f"Rp {df_final['Net_Rev'].sum():,.0f}")
@@ -77,18 +100,31 @@ if f_order and f_settle:
         m3.metric("Profit Final", f"Rp {df_final['Profit'].sum():,.0f}")
         m4.metric("Bagi Hasil (1/3)", f"Rp {df_final['Profit'].sum()/3:,.0f}")
 
-        # Tabel Audit - Fokus pada yang ERROR
-        st.subheader("⚠️ Cek Produk yang Belum Ada Modalnya")
-        error_df = df_final[df_final['Key'] == "TIDAK DITEMUKAN"][['Product Name', 'Variation', 'Quantity']]
-        if not error_df.empty:
-            st.warning(f"Ada {len(error_df)} transaksi yang modalnya belum terdaftar!")
-            st.dataframe(error_df, use_container_width=True)
+        # --- WARNING BOX: PRODUK BERMASALAH ---
+        missing_df = df_final[df_final['Key_Secrets'] == "TIDAK DITEMUKAN"]
+        if not missing_df.empty:
+            st.markdown('<div class="err-box">⚠️ Ada produk yang belum terdaftar di Secret! Tambahkan kata kunci di bawah ini ke Secrets Anda agar profit akurat.</div>', unsafe_allow_html=True)
+            # Tampilkan unik produk saja yang error
+            err_summary = missing_df[['Product Name', 'Variation']].drop_duplicates()
+            st.table(err_summary)
         else:
-            st.success("Semua produk sudah terdeteksi modalnya! ✅")
+            st.success("Semua produk terdeteksi dengan sempurna! ✅")
 
+        # --- TABEL DATA ---
+        with st.expander("Klik untuk lihat rincian seluruh transaksi"):
+            st.dataframe(df_final[['Order/adjustment ID', 'Product Name', 'Variation', 'Key_Secrets', 'Tipe', 'Total_Modal', 'Profit']], use_container_width=True)
+
+        # --- AI STRATEGIST ---
         st.divider()
-        st.subheader("📋 Seluruh Transaksi")
-        st.dataframe(df_final[['Order/adjustment ID', 'Product Name', 'Key', 'Tipe', 'Total_Modal', 'Profit']], use_container_width=True)
+        u_in = st.text_input("Tanya AI (Contoh: Analisa kenapa produk Arkanda paling laku?)")
+        if st.button("Analisis AI") and u_in:
+            genai.configure(api_key=API_KEY)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            context = df_final[['Product Name', 'Quantity', 'Profit']].head(30).to_string()
+            res = model.generate_content(f"Data:\n{context}\n\nUser: {u_in}")
+            st.info(res.text)
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Terjadi kesalahan: {e}")
+else:
+    st.info("Silakan unggah file CSV Pesanan dan Settlement di sidebar.")
