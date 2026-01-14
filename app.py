@@ -141,7 +141,7 @@ if f_order and f_settle:
         st.divider()
         anomali = df_final[(df_final['Profit'] <= 0) & (df_final['Key_Found'] != "TIDAK DITEMUKAN")]
         if not anomali.empty:
-            st.subheader("🛑 Anomali Profit)")
+            st.subheader("🛑 Anomali Profit")
             st.error(f"Ditemukan {len(anomali)} transaksi yang merugikan atau tidak profit.")
             st.dataframe(anomali[['Order/adjustment ID', 'Product Name', 'Settlement_Gross', 'Total_Modal', 'Profit']])
         else:
