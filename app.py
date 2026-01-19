@@ -7,7 +7,7 @@ import plotly.express as px
 # --- 1. CONFIG DASHBOARD ---
 st.set_page_config(page_title="Samareta Selalu Berjaya", layout="wide", page_icon="💰")
 
-# Custom Styling
+# Custom Styling agar tampilan lebih profesional
 st.markdown("""
     <style>
     [data-testid="stMetric"] { background-color: #1a1a1a !important; border: 1px solid #333; padding: 15px; border-radius: 10px; }
@@ -20,38 +20,39 @@ st.markdown("""
 try:
     DAFTAR_MODAL = st.secrets["MODAL_PRODUK"]
 except:
-    st.error("Secrets Belum Terisi!")
+    st.error("Secrets MODAL_PRODUK belum terisi di Dashboard Streamlit!")
     st.stop()
 
+# --- 3. JUDUL UTAMA ---
 st.title("🚀 Samareta Selalu Berjaya")
 
-# --- 3. FUNGSI PEMBERSIH ---
+# --- 4. FUNGSI PEMBERSIH TEKS ---
 def super_clean(text):
     if pd.isna(text): return ""
     text = str(text).replace('\t', ' ').replace('\n', ' ')
     text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
     return ' '.join(text.split()).lower()
 
-# --- 4. SIDEBAR ---
+# --- 5. SIDEBAR (Input File) ---
 with st.sidebar:
     st.header("⚙️ Data Source")
     f_order = st.file_uploader("1. Upload CSV PESANAN", type=["csv"])
     f_settle = st.file_uploader("2. Upload CSV SETTLEMENT", type=["csv"])
 
-# --- 5. LOGIKA UTAMA ---
+# --- 6. LOGIKA UTAMA (PEMROSESAN DATA) ---
 if f_order and f_settle:
     try:
         df_o = pd.read_csv(f_order)
         try: df_s = pd.read_csv(f_settle, sep=';')
         except: df_s = pd.read_csv(f_settle)
 
-        # Cleaning Data
+        # Pembersihan Nama Kolom & Karakter Tab
         df_o.columns = [c.replace('\t', '').strip() for c in df_o.columns]
         df_s.columns = [c.replace('\t', '').strip() for c in df_s.columns]
         df_o = df_o.applymap(lambda x: str(x).replace('\t', '').strip() if pd.notnull(x) else x)
         df_s = df_s.applymap(lambda x: str(x).replace('\t', '').strip() if pd.notnull(x) else x)
 
-        # Merge
+        # Sinkronisasi Data Order & Settlement
         df_s = df_s[df_s['Type'] == 'Order'].drop_duplicates(subset=['Order/adjustment ID'])
         col_id_o = next(c for c in df_o.columns if 'Order ID' in c)
         col_time_o = next(c for c in df_o.columns if 'Created Time' in c or 'Order create time' in c)
@@ -59,21 +60,22 @@ if f_order and f_settle:
         df_final = pd.merge(df_s, df_o[[col_id_o, 'Product Name', 'Variation', 'Quantity', col_time_o]], 
                            left_on='Order/adjustment ID', right_on=col_id_o, how='inner')
 
+        # Konversi Tipe Data
         df_final['Tanggal_Fix'] = pd.to_datetime(df_final[col_time_o], dayfirst=True, errors='coerce')
         df_final['Quantity'] = pd.to_numeric(df_final['Quantity'], errors='coerce').fillna(0)
         df_final['Settlement_Gross'] = pd.to_numeric(df_final['Total settlement amount'], errors='coerce').fillna(0)
 
-        # Filter Tanggal
+        # Filter Tanggal Sidebar
         with st.sidebar:
             st.divider()
             start_def = df_final['Tanggal_Fix'].min().date()
             end_def = df_final['Tanggal_Fix'].max().date()
-            date_range = st.date_input("Periode:", value=(start_def, end_def))
+            date_range = st.date_input("Periode Laporan:", value=(start_def, end_def))
 
         if len(date_range) == 2:
             df_final = df_final[(df_final['Tanggal_Fix'].dt.date >= date_range[0]) & (df_final['Tanggal_Fix'].dt.date <= date_range[1])]
 
-        # --- 6. LOGIKA SMART MATCHING DENGAN ATURAN RETURN/NEGATIF ---
+        # --- LOGIKA HITUNG MODAL & PROFIT (ATURAN RETUR) ---
         def calculate_logic(row):
             p_name = super_clean(row['Product Name'])
             p_var = super_clean(row['Variation'])
@@ -81,7 +83,7 @@ if f_order and f_settle:
             qty_order = row['Quantity']
             settlement = row['Settlement_Gross']
             
-            # 1. Cari Key Modal
+            # Cari Key di Secrets
             match_key, base_price = "TIDAK DITEMUKAN", 0
             sorted_keys = sorted(DAFTAR_MODAL.keys(), key=len, reverse=True)
             for k in sorted_keys:
@@ -89,18 +91,17 @@ if f_order and f_settle:
                     match_key, base_price = k, DAFTAR_MODAL[k]
                     break
             
-            # 2. Deteksi Multiplier
+            # Multiplier (Isi Paket)
             multiplier = 1
             find_isi_var = re.findall(r'isi\s*(\d+)', p_var)
             find_isi_name = re.findall(r'isi\s*(\d+)', p_name)
             if find_isi_var: multiplier = int(find_isi_var[0])
             elif find_isi_name: multiplier = int(find_isi_name[-1])
             
-            # 3. LOGIKA BARU SESUAI INSTRUKSI:
-            # Jika Settlement <= 0 (Return atau Minus Ongkir), Modal dianggap 0
+            # Aturan Profit Anda: Jika Settlement <= 0 (Return/Penalty), Modal dianggap 0
             if settlement <= 0:
                 total_modal = 0
-                tipe = "Return/Adjust (HPP 0)"
+                tipe = "Return/Penalty (HPP 0)"
             else:
                 total_modal = base_price * multiplier * qty_order
                 tipe = f"Satuan (x{int(qty_order)})" if multiplier == 1 else f"Paket Isi {multiplier} (x{int(qty_order)})"
@@ -108,29 +109,37 @@ if f_order and f_settle:
             return pd.Series([match_key, total_modal, tipe])
 
         df_final[['Key_Found', 'Total_Modal', 'Tipe']] = df_final.apply(calculate_logic, axis=1)
-
-        # Perhitungan Profit Final
+        
+        # Hitung Profit Akhir
         df_final['Profit'] = df_final['Settlement_Gross'] - df_final['Total_Modal']
+        
+        # TAMBAHAN: Kolom Validasi Perhitungan (Audit Selisih)
+        def validate_math(row):
+            expected = round(row['Settlement_Gross'] - row['Total_Modal'], 2)
+            actual = round(row['Profit'], 2)
+            return "✅ MATCH" if expected == actual else f"❌ MISSMATCH ({expected})"
+        
+        df_final['Validasi_Hitungan'] = df_final.apply(validate_math, axis=1)
 
-        # Warning Missing Key
+        # Cek Produk Belum Terdaftar
         unmatched = df_final[df_final['Key_Found'] == "TIDAK DITEMUKAN"]
         if not unmatched.empty:
-            st.warning("**⚠️ Produk belum terdaftar di Secrets!**")
+            st.warning("**⚠️ Peringatan: Beberapa produk belum ada di Secrets (HPP Masih 0)**")
             st.table(unmatched[['Product Name', 'Variation']].drop_duplicates())
 
-        # --- 7. UI: GRAFIK TREN ---
+        # --- 7. GRAFIK TREN KEUNTUNGAN ---
         st.subheader("📈 Tren Keuntungan Harian")
         daily_profit = df_final.groupby(df_final['Tanggal_Fix'].dt.date)['Profit'].sum().reset_index()
         fig_area = px.area(daily_profit, x='Tanggal_Fix', y='Profit', color_discrete_sequence=['#00ff00'])
         st.plotly_chart(fig_area, use_container_width=True)
 
-        # --- 8. UI: TOP 5 ---
-        st.subheader("🔝 Top 5 Best Seller")
+        # --- 8. TOP 5 BEST SELLER ---
+        st.subheader("🔝 Top 5 Best Seller (Laku Terbanyak)")
         top_products = df_final.groupby('Product Name')['Quantity'].sum().nlargest(5).reset_index()
-        fig_bar = px.bar(top_products, x='Quantity', y='Product Name', orientation='h', color_continuous_scale='Greens')
+        fig_bar = px.bar(top_products, x='Quantity', y='Product Name', orientation='h', color='Quantity', color_continuous_scale='Greens')
         st.plotly_chart(fig_bar, use_container_width=True)
 
-        # --- 9. UI: METRIK ---
+        # --- 9. METRIK KEUANGAN ---
         st.divider()
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Settlement", f"Rp {df_final['Settlement_Gross'].sum():,.0f}")
@@ -138,20 +147,24 @@ if f_order and f_settle:
         m3.metric("Profit Bersih", f"Rp {df_final['Profit'].sum():,.0f}")
         m4.metric("Bagi Hasil (1/3)", f"Rp {df_final['Profit'].sum()/3:,.0f}")
 
-        # --- 10. UI: RINCIAN ---
+        # --- 10. RINCIAN TRANSAKSI LENGKAP (DENGAN KEY & VALIDASI) ---
         st.divider()
         st.subheader("📋 Rincian Transaksi Lengkap")
-        st.dataframe(df_final[['Tanggal_Fix', 'Order/adjustment ID', 'Product Name', 'Variation', 'Tipe', 'Settlement_Gross', 'Total_Modal', 'Profit']], use_container_width=True)
+        # Kolom 'Key_Found' diletakkan sebelum Settlement, 'Validasi_Hitungan' diletakkan di akhir
+        st.dataframe(df_final[[
+            'Tanggal_Fix', 'Order/adjustment ID', 'Product Name', 'Variation', 
+            'Key_Found', 'Tipe', 'Settlement_Gross', 'Total_Modal', 'Profit', 'Validasi_Hitungan'
+        ]], use_container_width=True)
 
-        # --- 11. UI: ANOMALI ---
+        # --- 11. ANOMALI PROFIT ---
         st.divider()
         anomali = df_final[df_final['Profit'] < 0]
         if not anomali.empty:
-            st.subheader("🛑 Anomali Profit (Minus)")
-            st.error(f"Ditemukan {len(anomali)} transaksi rugi (Settlement Negatif).")
-            st.dataframe(anomali[['Order/adjustment ID', 'Product Name', 'Settlement_Gross', 'Profit']])
+            st.subheader("🛑 Anomali Profit (Minus/Rugi)")
+            st.error(f"Ditemukan {len(anomali)} transaksi dengan biaya melebihi pendapatan (Settlement Negatif).")
+            st.dataframe(anomali[['Order/adjustment ID', 'Product Name', 'Settlement_Gross', 'Total_Modal', 'Profit', 'Validasi_Hitungan']])
         else:
-            st.success("✅ Tidak ada transaksi rugi.")
+            st.success("✅ Tidak ditemukan anomali profit (semua transaksi impas atau untung).")
 
     except Exception as e:
-        st.error(f"Kesalahan: {e}")
+        st.error(f"Terjadi kesalahan sistem: {e}")
